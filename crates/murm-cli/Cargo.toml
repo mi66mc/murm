@@ -7,3 +7,22 @@ publish.workspace = true
 
 [dependencies]
 murm-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+fs2.workspace = true
+directories.workspace = true
+rpassword.workspace = true
+tempfile.workspace = true
