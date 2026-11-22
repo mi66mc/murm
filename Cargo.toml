@@ -19,7 +19,7 @@ thiserror = "2"
 ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 curve25519-dalek = "4.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "fs", "process"] }
-rusqlite = { version = "0.43", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled", "fallible_uint"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }

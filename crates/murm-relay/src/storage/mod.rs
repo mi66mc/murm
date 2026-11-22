@@ -2,6 +2,7 @@ use crate::StoreError;
 use rusqlite::Connection;
 use std::{path::Path,time::Duration};
 mod migrations;
+pub(crate) mod events;
 
 pub struct RelayStore { pub(crate) connection:Connection }
 impl RelayStore {
