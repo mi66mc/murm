@@ -70,7 +70,7 @@ async fn bounded(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>,
     }
     Ok(bytes)
 }
-type VerifiedEventSet=(Vec<VerifiedEvent>,Vec<(EventId,ProblemCode)>);
+type VerifiedEventSet = (Vec<VerifiedEvent>, Vec<(EventId, ProblemCode)>);
 fn verify_values(
     value: &Value,
     info: &RelayInfo,

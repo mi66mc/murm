@@ -1,12 +1,15 @@
 //! Public-state terminal UI. Commands and widgets call the same ClientService.
-mod state;
 mod actions;
-pub mod terminal;
-mod tasks;
 mod render;
+mod runtime;
+mod state;
+mod tasks;
+pub mod terminal;
 mod views;
-pub use state::*;
 pub use actions::*;
+pub use render::{render, sanitize};
+pub use runtime::{UiEffect, handle_key, run};
+pub use state::*;
 pub use tasks::*;
-pub use render::{render,sanitize};
-pub use views::profiles::{Form,FormKind,FormRequest,FormOutcome,execute_form};
+pub use views::outbox::destination_label;
+pub use views::profiles::{Form, FormKind, FormOutcome, FormRequest, execute_form};

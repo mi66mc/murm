@@ -37,6 +37,7 @@ directories = "6"
 rpassword = "7"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
 crossterm = "0.29"
+unicode-width = "0.2"
 
 [profile.dev.package.argon2]
 opt-level = 3
