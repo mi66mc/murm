@@ -3,6 +3,12 @@
 Base do workspace Rust para a implementação experimental do Murm.
 Ainda não há funcionalidades do protocolo implementadas.
 
+## Planejamento
+
+O [desenho do protótipo](docs/design.md) e os [planos por componente](docs/plans/README.md)
+descrevem protocolo compartilhado, relay, perfis/cofre/SQLite do cliente e TUI.
+São propostas para revisão; nenhuma das etapas foi implementada.
+
 ## Projetos
 
 - `crates/murm-protocol`: biblioteca compartilhada pelo relay e pelo cliente.
