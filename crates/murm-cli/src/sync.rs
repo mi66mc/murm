@@ -74,7 +74,7 @@ impl ClientService{
     }
     pub async fn sync_filtered(&self,profile:ProfileId,url:&str,filters:FilterSet)->Result<SyncSummary,ClientError>{
         let url=validate_url(url)?;self.require_relay(profile,&url).await?;let signature=filter_hash(&filters)?;
-        let peer=url.clone();let now=now();
+        let peer=url.clone();let now=self.clock.now_unix();
         let wait=self.db.call(move|c|{
             let until:Option<u64>=c.query_row("SELECT retry_at FROM relay_backoff WHERE profile_id=?1 AND relay=?2",params![profile.to_string(),peer],|r|r.get(0)).optional()?;
             Ok(until.unwrap_or(0).saturating_sub(now))
