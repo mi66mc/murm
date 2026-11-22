@@ -52,7 +52,7 @@ pub fn validate_publication(event: &VerifiedEvent) -> Result<PublicationMeta, Pr
     }
     let revision = h
         .get("revision")
-        .and_then(|v| v.as_u64())
+        .and_then(safe_u64)
         .filter(|&v| v > 0 && v <= MAX_SAFE_INTEGER)
         .ok_or(bad.clone())?;
     let status = match h.get("status").and_then(|v| v.as_str()) {

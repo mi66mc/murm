@@ -77,8 +77,12 @@ pub struct EventQuery {
 #[serde(deny_unknown_fields)]
 pub struct SyncRequest {
     pub filters: FilterSet,
+    #[serde(deserialize_with = "required_cursor")]
     pub cursor: Option<String>,
     pub limit: u64,
+}
+fn required_cursor<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
 }
 
 pub fn validate_filters(filters: &[Filter], info: &RelayInfo) -> Result<(), ProtocolError> {

@@ -114,3 +114,9 @@ fn safe_integer_field_types_and_lowercase_hex() {
         .is_err()
     );
 }
+#[test]
+fn integral_binary64_notation_is_accepted() {
+    let s =
+        input(r#"{"revision":1.0}"#, "null").replace(r#""created_at":1"#, r#""created_at":1e0"#);
+    assert_eq!(parse_event(s.as_bytes(), limits()).unwrap().created_at, 1);
+}

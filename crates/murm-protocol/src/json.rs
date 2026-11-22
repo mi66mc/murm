@@ -54,6 +54,9 @@ impl<'de> Deserialize<'de> for Strict {
                 if !v.is_finite() || (v.fract() == 0.0 && v.abs() > MAX_SAFE_INTEGER as f64) {
                     return Err(E::custom("unsafe number"));
                 }
+                if v.fract() == 0.0 {
+                    return Ok(Strict(Value::Number(Number::from(v as i64))));
+                }
                 Ok(Strict(Value::Number(
                     Number::from_f64(v).ok_or_else(|| E::custom("nonfinite"))?,
                 )))
@@ -79,6 +82,20 @@ impl<'de> Deserialize<'de> for Strict {
         }
         d.deserialize_any(JsonVisitor)
     }
+}
+
+pub fn safe_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .filter(|n| *n <= MAX_SAFE_INTEGER)
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|n| {
+                    n.is_finite() && n.fract() == 0.0 && *n >= 0.0 && *n <= MAX_SAFE_INTEGER as f64
+                })
+                .map(|n| n as u64)
+        })
 }
 
 /// Bounds nesting before recursive deserialization; quoted brackets do not count.
