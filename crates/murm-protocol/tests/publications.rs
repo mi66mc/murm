@@ -88,6 +88,17 @@ fn missing_predecessor_allowed() {
     );
 }
 #[test]
+fn integral_float_revision_is_valid() {
+    let mut h = header();
+    h["revision"] = json!(1.0);
+    assert_eq!(
+        validate_publication(&make(h, json!("body"), 1))
+            .unwrap()
+            .revision,
+        1
+    );
+}
+#[test]
 fn greater_revision_then_greater_id() {
     let a = validate_publication(&make(header(), json!("a"), 1)).unwrap();
     let b = validate_publication(&make(header(), json!("b"), 1)).unwrap();

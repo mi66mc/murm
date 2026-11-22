@@ -88,6 +88,13 @@ fn unknown_request_member_rejected() {
     }
 }
 #[test]
+fn condition_value_and_sync_cursor_are_required() {
+    assert!(
+        serde_json::from_value::<HeaderCondition>(json!({"path":"/status","op":"eq"})).is_err()
+    );
+    assert!(serde_json::from_value::<SyncRequest>(json!({"filters":[{}],"limit":1})).is_err());
+}
+#[test]
 fn header_requires_explicit_kinds() {
     let q = query(
         json!({"filters":[{"header":[{"path":"/status","op":"eq","value":"published"}]}],"limit":1}),

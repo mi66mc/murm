@@ -12,5 +12,5 @@ pub use crypto::*;
 pub use error::*;
 pub use event::*;
 pub use filter::*;
-pub use json::{ParseLimits, parse_event, parse_json};
+pub use json::{ParseLimits, parse_event, parse_json, safe_u64};
 pub use publication::*;
