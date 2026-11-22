@@ -70,11 +70,12 @@ async fn bounded(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>,
     }
     Ok(bytes)
 }
+type VerifiedEventSet=(Vec<VerifiedEvent>,Vec<(EventId,ProblemCode)>);
 fn verify_values(
     value: &Value,
     info: &RelayInfo,
     limits: ParseLimits,
-) -> Result<(Vec<VerifiedEvent>, Vec<(EventId, ProblemCode)>), ClientError> {
+) -> Result<VerifiedEventSet, ClientError> {
     let values = value
         .get("events")
         .and_then(Value::as_array)
