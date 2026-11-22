@@ -10,7 +10,11 @@ pub enum ProfileMode{ReadOnly,Signing}
 pub struct ProfileSummary {
     pub id:ProfileId,pub name:String,pub public_key:SignerKey,pub mode:ProfileMode,pub locked:bool,pub relays:Vec<String>,
 }
-pub enum ProfileInput{ImportPublic(SignerKey)}
+pub enum ProfileInput{
+    Generate,
+    ImportPublic(SignerKey),
+    ImportSecret{seed:crate::SecretSeed,public_key:Option<SignerKey>},
+}
 pub(crate) fn validate_name(name:&str)->Result<(),ClientError>{
     if name.is_empty() || name.chars().count()>80 || name.chars().any(char::is_control){return Err(ClientError::InvalidInput);}Ok(())
 }
@@ -23,21 +27,38 @@ pub(crate) fn get_profile(c:&Connection,id:ProfileId)->Result<ProfileSummary,Cli
 }
 impl ClientService {
     pub async fn list_profiles(&self)->Result<Vec<ProfileSummary>,ClientError>{
-        self.db.call(|c|{
+        let mut profiles=self.db.call(|c|{
             let ids=c.prepare("SELECT id FROM profiles ORDER BY name,id")?.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-            ids.into_iter().map(|s|get_profile(c,s.parse().map_err(|_|ClientError::InvalidInput)?)).collect()
-        }).await
+            ids.into_iter().map(|s|get_profile(c,s.parse().map_err(|_|ClientError::InvalidInput)?)).collect::<Result<Vec<_>,ClientError>>()
+        }).await?;
+        let unlocked=self.is_unlocked();
+        for p in &mut profiles {p.locked=p.mode==ProfileMode::Signing && !unlocked;}
+        Ok(profiles)
     }
-    pub async fn profile(&self,id:ProfileId)->Result<ProfileSummary,ClientError>{self.db.call(move|c|get_profile(c,id)).await}
+    pub async fn profile(&self,id:ProfileId)->Result<ProfileSummary,ClientError>{
+        let mut p=self.db.call(move|c|get_profile(c,id)).await?;
+        p.locked=p.mode==ProfileMode::Signing && !self.is_unlocked();Ok(p)
+    }
     pub async fn active_profile(&self)->Result<Option<ProfileSummary>,ClientError>{
-        self.db.call(|c|{
+        let mut profile=self.db.call(|c|{
             let id:Option<String>=c.query_row("SELECT value FROM client_meta WHERE key='active_profile'",[],|r|r.get(0)).optional()?;
             id.map(|id|get_profile(c,id.parse().map_err(|_|ClientError::InvalidInput)?)).transpose()
-        }).await
+        }).await?;
+        if let Some(p)=&mut profile {p.locked=p.mode==ProfileMode::Signing && !self.is_unlocked();}
+        Ok(profile)
     }
     pub async fn create_profile(&self,name:&str,input:ProfileInput)->Result<ProfileSummary,ClientError>{
         validate_name(name)?;let name=name.to_owned();
-        let ProfileInput::ImportPublic(key)=input;validate_signer_key(&key).map_err(|_|ClientError::InvalidKey)?;
+        let key=match input {
+            ProfileInput::Generate=>{
+                let mut seed=zeroize::Zeroizing::new([0u8;32]);
+                getrandom::fill(seed.as_mut_slice()).map_err(|_|ClientError::Io)?;
+                return self.create_signing_profile(name,crate::SecretSeed(seed),None).await;
+            }
+            ProfileInput::ImportSecret{seed,public_key}=>return self.create_signing_profile(name,seed,public_key).await,
+            ProfileInput::ImportPublic(key)=>key,
+        };
+        validate_signer_key(&key).map_err(|_|ClientError::InvalidKey)?;
         self.db.call(move|c|{
             let t=c.transaction()?;
             let old:Option<String>=t.query_row("SELECT id FROM profiles WHERE public_key=?1",[key.to_string()],|r|r.get(0)).optional()?;
