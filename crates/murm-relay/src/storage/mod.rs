@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use std::{path::Path,time::Duration};
 mod migrations;
 pub(crate) mod events;
+mod query;
 
 pub struct RelayStore { pub(crate) connection:Connection }
 impl RelayStore {
