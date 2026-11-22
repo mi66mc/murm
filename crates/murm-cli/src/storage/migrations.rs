@@ -1,10 +1,14 @@
 use crate::ClientError;
 use rusqlite::Connection;
-pub fn migrate(c:&mut Connection)->Result<(),ClientError>{
-    let version:i64=c.pragma_query_value(None,"user_version",|r|r.get(0))?;
-    if version>1{return Err(ClientError::InvalidInput);}
-    if version==1{return Ok(());}
-    let t=c.transaction()?;
+pub fn migrate(c: &mut Connection) -> Result<(), ClientError> {
+    let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version > 1 {
+        return Err(ClientError::InvalidInput);
+    }
+    if version == 1 {
+        return Ok(());
+    }
+    let t = c.transaction()?;
     t.execute_batch("
         CREATE TABLE client_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,public_key TEXT NOT NULL UNIQUE,
@@ -33,5 +37,7 @@ pub fn migrate(c:&mut Connection)->Result<(),ClientError>{
             relay TEXT NOT NULL,state TEXT NOT NULL,retain_until INTEGER,retry_at INTEGER,attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT,
             PRIMARY KEY(event_id,relay));
         PRAGMA user_version=1;
-    ")?;t.commit()?;Ok(())
+    ")?;
+    t.commit()?;
+    Ok(())
 }
