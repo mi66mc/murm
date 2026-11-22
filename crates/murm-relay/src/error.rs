@@ -1,6 +1,6 @@
-use murm_protocol::{ProblemCode,ProtocolError};
+use murm_protocol::{ProblemCode, ProtocolError};
 use thiserror::Error;
-#[derive(Debug,Error)]
+#[derive(Debug, Error)]
 pub enum StoreError {
     #[error("database unavailable")]
     Database(#[from] rusqlite::Error),
@@ -16,10 +16,12 @@ pub enum StoreError {
     Unavailable,
 }
 impl StoreError {
-    pub fn code(&self)->ProblemCode {
+    pub fn code(&self) -> ProblemCode {
         match self {
-            Self::Protocol(e)=>e.clone().into(),Self::Rejected(c)=>*c,
-            Self::Config=>ProblemCode::InvalidRequest,_=>ProblemCode::TemporarilyUnavailable,
+            Self::Protocol(e) => e.clone().into(),
+            Self::Rejected(c) => *c,
+            Self::Config => ProblemCode::InvalidRequest,
+            _ => ProblemCode::TemporarilyUnavailable,
         }
     }
 }

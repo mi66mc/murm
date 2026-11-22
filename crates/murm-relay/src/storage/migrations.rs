@@ -1,10 +1,14 @@
 use crate::StoreError;
 use rusqlite::Connection;
-pub fn migrate(c:&mut Connection)->Result<(),StoreError> {
-    let version:i64=c.pragma_query_value(None,"user_version",|r|r.get(0))?;
-    if version>1 {return Err(StoreError::Config);}
-    if version==1 {return Ok(());}
-    let t=c.transaction()?;
+pub fn migrate(c: &mut Connection) -> Result<(), StoreError> {
+    let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version > 1 {
+        return Err(StoreError::Config);
+    }
+    if version == 1 {
+        return Ok(());
+    }
+    let t = c.transaction()?;
     t.execute_batch("
         CREATE TABLE relay_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE events(
@@ -31,8 +35,16 @@ pub fn migrate(c:&mut Connection)->Result<(),StoreError> {
             event_count INTEGER NOT NULL,expires_at INTEGER NOT NULL);
         PRAGMA user_version=1;
     ")?;
-    let mut secret=[0u8;32];getrandom::fill(&mut secret).map_err(|_|StoreError::Unavailable)?;
-    t.execute("INSERT INTO relay_meta(key,value) VALUES('epoch',?1)",[uuid::Uuid::new_v4().to_string()])?;
-    t.execute("INSERT INTO relay_meta(key,value) VALUES('cursor_secret',?1)",[hex::encode(secret)])?;
-    t.commit()?;Ok(())
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).map_err(|_| StoreError::Unavailable)?;
+    t.execute(
+        "INSERT INTO relay_meta(key,value) VALUES('epoch',?1)",
+        [uuid::Uuid::new_v4().to_string()],
+    )?;
+    t.execute(
+        "INSERT INTO relay_meta(key,value) VALUES('cursor_secret',?1)",
+        [hex::encode(secret)],
+    )?;
+    t.commit()?;
+    Ok(())
 }
