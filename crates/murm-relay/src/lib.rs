@@ -2,6 +2,7 @@
 mod config;
 mod error;
 mod worker;
+mod cursor;
 pub mod storage;
 pub use config::*;
 pub use error::*;
