@@ -28,6 +28,7 @@ rpassword.workspace = true
 tempfile.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
