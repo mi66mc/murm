@@ -10,3 +10,9 @@ publish = false
 
 [workspace.dependencies]
 murm-protocol = { path = "crates/murm-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+serde_jcs = "0.4"
+sha2 = "0.10"
+hex = "0.4"
+thiserror = "2"
