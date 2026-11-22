@@ -15,12 +15,18 @@ macro_rules! hex_type {
             }
         }
         impl fmt::Debug for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(self, f) }
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(self, f)
+            }
         }
         impl FromStr for $name {
             type Err = ProtocolError;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                if s.len() != $len * 2 || !s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                if s.len() != $len * 2
+                    || !s
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
                     return Err(ProtocolError::InvalidEvent);
                 }
                 let mut bytes = [0; $len];
@@ -29,14 +35,18 @@ macro_rules! hex_type {
             }
         }
         impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> { s.serialize_str(&self.to_string()) }
+            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(&self.to_string())
+            }
         }
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                String::deserialize(d)?.parse().map_err(serde::de::Error::custom)
+                String::deserialize(d)?
+                    .parse()
+                    .map_err(serde::de::Error::custom)
             }
         }
-    }
+    };
 }
 hex_type!(EventId, 32);
 hex_type!(SignerKey, 32);
@@ -66,8 +76,14 @@ pub struct UnsignedEvent {
 }
 impl Event {
     pub fn unsigned(&self) -> UnsignedEvent {
-        UnsignedEvent { version: self.version, signer: self.signer, created_at: self.created_at,
-            kind: self.kind, header: self.header.clone(), content: self.content.clone() }
+        UnsignedEvent {
+            version: self.version,
+            signer: self.signer,
+            created_at: self.created_at,
+            kind: self.kind,
+            header: self.header.clone(),
+            content: self.content.clone(),
+        }
     }
 }
 /// Construction is restricted to successful envelope/hash/signature verification.
@@ -75,6 +91,10 @@ impl Event {
 #[serde(transparent)]
 pub struct VerifiedEvent(pub(crate) Event);
 impl VerifiedEvent {
-    pub fn event(&self) -> &Event { &self.0 }
-    pub fn into_event(self) -> Event { self.0 }
+    pub fn event(&self) -> &Event {
+        &self.0
+    }
+    pub fn into_event(self) -> Event {
+        self.0
+    }
 }
