@@ -3,6 +3,7 @@ mod app;
 mod articles;
 pub mod commands;
 mod editor;
+pub mod tui;
 mod error;
 mod outbox;
 mod profiles;
