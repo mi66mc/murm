@@ -1,19 +1,42 @@
 use crate::*;
 use murm_protocol::*;
-use rusqlite::{OptionalExtension,params};
-use serde::{Serialize,Deserialize};
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
-#[serde(rename_all="snake_case")]
-pub enum DestinationState{Pending,Stored,Refused,RetryAt}
-#[derive(Debug,Clone,Serialize,Deserialize)]
-pub struct DestinationStatus{pub relay:String,pub state:DestinationState,pub retain_until:Option<u64>,pub retry_at:Option<u64>,pub attempts:u64,pub last_error:Option<String>}
-#[derive(Debug,Clone,Serialize,Deserialize)]
-pub struct OutboxEntry{pub event_id:EventId,pub profile_id:ProfileId,pub created_at:u64,pub destinations:Vec<DestinationStatus>}
-fn state(s:&str)->Result<DestinationState,ClientError>{
-    match s{"pending"=>Ok(DestinationState::Pending),"stored"=>Ok(DestinationState::Stored),"refused"=>Ok(DestinationState::Refused),"retry_at"=>Ok(DestinationState::RetryAt),_=>Err(ClientError::InvalidInput)}
+use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationState {
+    Pending,
+    Stored,
+    Refused,
+    RetryAt,
 }
-impl ClientService{
-    pub async fn outbox(&self,profile:ProfileId)->Result<Vec<OutboxEntry>,ClientError>{
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DestinationStatus {
+    pub relay: String,
+    pub state: DestinationState,
+    pub retain_until: Option<u64>,
+    pub retry_at: Option<u64>,
+    pub attempts: u64,
+    pub last_error: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboxEntry {
+    pub event_id: EventId,
+    pub profile_id: ProfileId,
+    pub created_at: u64,
+    pub destinations: Vec<DestinationStatus>,
+}
+fn state(s: &str) -> Result<DestinationState, ClientError> {
+    match s {
+        "pending" => Ok(DestinationState::Pending),
+        "stored" => Ok(DestinationState::Stored),
+        "refused" => Ok(DestinationState::Refused),
+        "retry_at" => Ok(DestinationState::RetryAt),
+        _ => Err(ClientError::InvalidInput),
+    }
+}
+impl ClientService {
+    pub async fn outbox(&self, profile: ProfileId) -> Result<Vec<OutboxEntry>, ClientError> {
         self.db.call(move|c|{
             let rows=c.prepare("SELECT event_id,created_at FROM outbox WHERE profile_id=?1 ORDER BY created_at DESC,event_id DESC LIMIT 1000")?
                 .query_map([profile.to_string()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
@@ -26,10 +49,16 @@ impl ClientService{
             }Ok(result)
         }).await
     }
-    pub async fn retry_event(&self,profile:ProfileId,id:EventId)->Result<(),ClientError>{
-        let entry=self.outbox(profile).await?.into_iter().find(|e|e.event_id==id).ok_or(ClientError::NotFound)?;
-        for destination in entry.destinations{
-            let relay=destination.relay.clone();let now=self.clock.now_unix();
+    pub async fn retry_event(&self, profile: ProfileId, id: EventId) -> Result<(), ClientError> {
+        let entry = self
+            .outbox(profile)
+            .await?
+            .into_iter()
+            .find(|e| e.event_id == id)
+            .ok_or(ClientError::NotFound)?;
+        for destination in entry.destinations {
+            let relay = destination.relay.clone();
+            let now = self.clock.now_unix();
             let event=self.db.call(move|c|{
                 let t=c.transaction()?;
                 let row:Option<(String,Option<u64>,u64,Vec<u8>)>=t.query_row("SELECT d.state,d.retry_at,d.attempts,o.json FROM outbox_destinations d JOIN outbox o ON o.event_id=d.event_id WHERE o.profile_id=?1 AND d.event_id=?2 AND d.relay=?3",
@@ -43,9 +72,14 @@ impl ClientService{
                 t.execute("UPDATE outbox_destinations SET state='retry_at',retry_at=?3,attempts=attempts+1 WHERE event_id=?1 AND relay=?2",params![id.to_string(),relay,now.saturating_add(20)])?;
                 t.commit()?;Ok(Some((event,attempts+1)))
             }).await?;
-            let Some((event,attempts))=event else{continue};
-            let result=RelayTransport::new(&destination.relay)?.submit(&event).await;
-            let now=self.clock.now_unix();let relay=destination.relay;
+            let Some((event, attempts)) = event else {
+                continue;
+            };
+            let result = RelayTransport::new(&destination.relay)?
+                .submit(&event)
+                .await;
+            let now = self.clock.now_unix();
+            let relay = destination.relay;
             self.db.call(move|c|{
                 match result{
                     Ok(receipt)=>{c.execute("UPDATE outbox_destinations SET state='stored',retain_until=?3,retry_at=NULL,last_error=NULL WHERE event_id=?1 AND relay=?2",params![id.to_string(),relay,receipt.retain_until])?;}
@@ -61,7 +95,10 @@ impl ClientService{
         }
         Ok(())
     }
-    pub async fn retry_outbox(&self,profile:ProfileId)->Result<(),ClientError>{
-        for entry in self.outbox(profile).await?.into_iter().take(100){self.retry_event(profile,entry.event_id).await?;}Ok(())
+    pub async fn retry_outbox(&self, profile: ProfileId) -> Result<(), ClientError> {
+        for entry in self.outbox(profile).await?.into_iter().take(100) {
+            self.retry_event(profile, entry.event_id).await?;
+        }
+        Ok(())
     }
 }

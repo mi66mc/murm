@@ -1,59 +1,133 @@
 use crate::*;
-use crate::{profiles::get_profile,sync::cache_event,vault::sign_on_connection};
+use crate::{profiles::get_profile, sync::cache_event, vault::sign_on_connection};
 use murm_protocol::*;
-use serde::{Serialize,Deserialize};
-use serde_json::{json,Value,Map};
-use rusqlite::{Connection,OptionalExtension,params};
-pub type DraftId=uuid::Uuid;
-#[derive(Debug,Clone,Serialize,Deserialize)]
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+pub type DraftId = uuid::Uuid;
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Draft {
-    pub id:DraftId,pub profile_id:ProfileId,pub publication:String,pub header:Map<String,Value>,
-    pub content:Value,pub version:u64,pub queued_event_id:Option<EventId>,
+    pub id: DraftId,
+    pub profile_id: ProfileId,
+    pub publication: String,
+    pub header: Map<String, Value>,
+    pub content: Value,
+    pub version: u64,
+    pub queued_event_id: Option<EventId>,
 }
-#[derive(Debug,Clone,Serialize,Deserialize)]
-pub struct ArticleSummary{
-    pub id:EventId,pub signer:SignerKey,pub publication:String,pub revision:u64,pub status:PublicationStatus,
-    pub title:String,pub created_at:u64,pub conflicts:bool,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArticleSummary {
+    pub id: EventId,
+    pub signer: SignerKey,
+    pub publication: String,
+    pub revision: u64,
+    pub status: PublicationStatus,
+    pub title: String,
+    pub created_at: u64,
+    pub conflicts: bool,
 }
-fn load(c:&Connection,profile:ProfileId,id:DraftId)->Result<Draft,ClientError>{
+fn load(c: &Connection, profile: ProfileId, id: DraftId) -> Result<Draft, ClientError> {
     let row:Option<(String,String,String,u64,Option<String>)>=c.query_row(
         "SELECT publication,header,content,version,queued_event_id FROM drafts WHERE id=?1 AND profile_id=?2",params![id.to_string(),profile.to_string()],
         |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-    let (publication,header,content,version,queued)=row.ok_or(ClientError::NotFound)?;
-    Ok(Draft{id,profile_id:profile,publication,header:serde_json::from_str(&header).map_err(|_|ClientError::InvalidInput)?,
-        content:serde_json::from_str(&content).map_err(|_|ClientError::InvalidInput)?,version,
-        queued_event_id:queued.map(|v|v.parse().map_err(ClientError::from)).transpose()?})
+    let (publication, header, content, version, queued) = row.ok_or(ClientError::NotFound)?;
+    Ok(Draft {
+        id,
+        profile_id: profile,
+        publication,
+        header: serde_json::from_str(&header).map_err(|_| ClientError::InvalidInput)?,
+        content: serde_json::from_str(&content).map_err(|_| ClientError::InvalidInput)?,
+        version,
+        queued_event_id: queued
+            .map(|v| v.parse().map_err(ClientError::from))
+            .transpose()?,
+    })
 }
-fn insert(c:&Connection,draft:&Draft)->Result<(),ClientError>{
+fn insert(c: &Connection, draft: &Draft) -> Result<(), ClientError> {
     c.execute("INSERT INTO drafts(id,profile_id,publication,header,content,version,queued_event_id) VALUES(?1,?2,?3,?4,?5,?6,NULL)",
         params![draft.id.to_string(),draft.profile_id.to_string(),draft.publication,serde_json::to_string(&draft.header).map_err(|_|ClientError::InvalidInput)?,
-            serde_json::to_string(&draft.content).map_err(|_|ClientError::InvalidInput)?,draft.version])?;Ok(())
+            serde_json::to_string(&draft.content).map_err(|_|ClientError::InvalidInput)?,draft.version])?;
+    Ok(())
 }
-fn next_revision(c:&Connection,key:SignerKey,publication:&str)->Result<u64,ClientError>{
-    let revision:Option<u64>=c.query_row("SELECT revision FROM publication_heads WHERE signer=?1 AND kind=1 AND publication=?2",
-        params![key.to_string(),publication],|r|r.get(0)).optional()?;
-    let current=revision.unwrap_or(0);
-    if current>=MAX_SAFE_INTEGER{return Err(ClientError::Conflict);}Ok(current+1)
+fn next_revision(c: &Connection, key: SignerKey, publication: &str) -> Result<u64, ClientError> {
+    let revision: Option<u64> = c
+        .query_row(
+            "SELECT revision FROM publication_heads WHERE signer=?1 AND kind=1 AND publication=?2",
+            params![key.to_string(), publication],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let current = revision.unwrap_or(0);
+    if current >= MAX_SAFE_INTEGER {
+        return Err(ClientError::Conflict);
+    }
+    Ok(current + 1)
 }
-impl ClientService{
-    pub async fn create_draft(&self,profile:ProfileId,title:&str,source:&str)->Result<Draft,ClientError>{
-        if title.chars().count()>200 || source.len()>4194304{return Err(ClientError::InvalidInput);}
-        let publication=uuid::Uuid::new_v4().to_string();
-        let draft=Draft{id:DraftId::new_v4(),profile_id:profile,publication:publication.clone(),
-            header:json!({"publication":publication,"revision":1,"status":"published","title":title}).as_object().ok_or(ClientError::InvalidInput)?.clone(),
-            content:json!(source),version:1,queued_event_id:None};
-        self.db.call(move|c|{get_profile(c,profile)?;insert(c,&draft)?;Ok(draft)}).await
+impl ClientService {
+    pub async fn create_draft(
+        &self,
+        profile: ProfileId,
+        title: &str,
+        source: &str,
+    ) -> Result<Draft, ClientError> {
+        if title.chars().count() > 200 || source.len() > 4194304 {
+            return Err(ClientError::InvalidInput);
+        }
+        let publication = uuid::Uuid::new_v4().to_string();
+        let draft = Draft {
+            id: DraftId::new_v4(),
+            profile_id: profile,
+            publication: publication.clone(),
+            header:
+                json!({"publication":publication,"revision":1,"status":"published","title":title})
+                    .as_object()
+                    .ok_or(ClientError::InvalidInput)?
+                    .clone(),
+            content: json!(source),
+            version: 1,
+            queued_event_id: None,
+        };
+        self.db
+            .call(move |c| {
+                get_profile(c, profile)?;
+                insert(c, &draft)?;
+                Ok(draft)
+            })
+            .await
     }
-    pub async fn load_draft(&self,profile:ProfileId,id:DraftId)->Result<Draft,ClientError>{self.db.call(move|c|load(c,profile,id)).await}
-    pub async fn list_drafts(&self,profile:ProfileId)->Result<Vec<Draft>,ClientError>{
-        self.db.call(move|c|{
-            let ids=c.prepare("SELECT id FROM drafts WHERE profile_id=?1 ORDER BY rowid DESC LIMIT 1000")?
-                .query_map([profile.to_string()],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-            ids.into_iter().map(|id|load(c,profile,id.parse().map_err(|_|ClientError::InvalidInput)?)).collect()
-        }).await
+    pub async fn load_draft(&self, profile: ProfileId, id: DraftId) -> Result<Draft, ClientError> {
+        self.db.call(move |c| load(c, profile, id)).await
     }
-    pub async fn save_draft(&self,profile:ProfileId,mut draft:Draft)->Result<Draft,ClientError>{
-        if profile!=draft.profile_id || draft.content.as_str().is_some_and(|s|s.len()>4194304){return Err(ClientError::InvalidInput);}
+    pub async fn list_drafts(&self, profile: ProfileId) -> Result<Vec<Draft>, ClientError> {
+        self.db
+            .call(move |c| {
+                let ids = c
+                    .prepare(
+                        "SELECT id FROM drafts WHERE profile_id=?1 ORDER BY rowid DESC LIMIT 1000",
+                    )?
+                    .query_map([profile.to_string()], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                ids.into_iter()
+                    .map(|id| {
+                        load(
+                            c,
+                            profile,
+                            id.parse().map_err(|_| ClientError::InvalidInput)?,
+                        )
+                    })
+                    .collect()
+            })
+            .await
+    }
+    pub async fn save_draft(
+        &self,
+        profile: ProfileId,
+        mut draft: Draft,
+    ) -> Result<Draft, ClientError> {
+        if profile != draft.profile_id || draft.content.as_str().is_some_and(|s| s.len() > 4194304)
+        {
+            return Err(ClientError::InvalidInput);
+        }
         self.db.call(move|c|{
             let t=c.transaction()?;let old=load(&t,profile,draft.id)?;
             if old.version!=draft.version || old.publication!=draft.publication{return Err(ClientError::Conflict);}
@@ -69,8 +143,12 @@ impl ClientService{
             t.commit()?;Ok(draft)
         }).await
     }
-    pub async fn edit_publication(&self,profile:ProfileId,publication:&str)->Result<Draft,ClientError>{
-        let publication=publication.to_owned();
+    pub async fn edit_publication(
+        &self,
+        profile: ProfileId,
+        publication: &str,
+    ) -> Result<Draft, ClientError> {
+        let publication = publication.to_owned();
         self.db.call(move|c|{
             let p=get_profile(c,profile)?;
             let bytes:Vec<u8>=c.query_row("SELECT e.json FROM publication_heads h JOIN verified_events e ON e.id=h.id WHERE h.signer=?1 AND h.kind=1 AND h.publication=?2",
@@ -84,8 +162,9 @@ impl ClientService{
         }).await
     }
     /// Persist a signed immutable event and all destinations before any network send.
-    pub async fn publish(&self,profile:ProfileId,id:DraftId)->Result<EventId,ClientError>{
-        let vault=self.vault.clone();let now=self.clock.now_unix();
+    pub async fn publish(&self, profile: ProfileId, id: DraftId) -> Result<EventId, ClientError> {
+        let vault = self.vault.clone();
+        let now = self.clock.now_unix();
         self.db.call(move|c|{
             let t=c.transaction()?;let p=get_profile(&t,profile)?;let draft=load(&t,profile,id)?;
             if p.mode!=ProfileMode::Signing{return Err(ClientError::ReadOnly);}
@@ -103,16 +182,32 @@ impl ClientService{
             t.commit()?;Ok(event_id)
         }).await
     }
-    pub async fn withdraw(&self,profile:ProfileId,publication:&str)->Result<EventId,ClientError>{
-        let mut draft=self.edit_publication(profile,publication).await?;
-        draft.header.insert("status".into(),json!("withdrawn"));draft.content=Value::Null;
-        let draft=self.save_draft(profile,draft).await?;self.publish(profile,draft.id).await
+    pub async fn withdraw(
+        &self,
+        profile: ProfileId,
+        publication: &str,
+    ) -> Result<EventId, ClientError> {
+        let mut draft = self.edit_publication(profile, publication).await?;
+        draft.header.insert("status".into(), json!("withdrawn"));
+        draft.content = Value::Null;
+        let draft = self.save_draft(profile, draft).await?;
+        self.publish(profile, draft.id).await
     }
-    pub async fn restore(&self,profile:ProfileId,publication:&str,source:&str)->Result<EventId,ClientError>{
-        let mut draft=self.edit_publication(profile,publication).await?;draft.content=json!(source);
-        let draft=self.save_draft(profile,draft).await?;self.publish(profile,draft.id).await
+    pub async fn restore(
+        &self,
+        profile: ProfileId,
+        publication: &str,
+        source: &str,
+    ) -> Result<EventId, ClientError> {
+        let mut draft = self.edit_publication(profile, publication).await?;
+        draft.content = json!(source);
+        let draft = self.save_draft(profile, draft).await?;
+        self.publish(profile, draft.id).await
     }
-    pub async fn list_articles(&self,include_withdrawn:bool)->Result<Vec<ArticleSummary>,ClientError>{
+    pub async fn list_articles(
+        &self,
+        include_withdrawn: bool,
+    ) -> Result<Vec<ArticleSummary>, ClientError> {
         self.db.call(move|c|{
             let sql=if include_withdrawn{"SELECT e.json FROM publication_heads h JOIN verified_events e ON e.id=h.id ORDER BY e.created_at DESC,e.id DESC LIMIT 1000"}
                 else{"SELECT e.json FROM publication_heads h JOIN verified_events e ON e.id=h.id WHERE h.status='published' ORDER BY e.created_at DESC,e.id DESC LIMIT 1000"};
@@ -128,8 +223,13 @@ impl ClientService{
             Ok(result)
         }).await
     }
-    pub async fn article_history(&self,signer:SignerKey,publication:&str)->Result<Vec<VerifiedEvent>,ClientError>{
-        let publication=publication.to_owned();self.db.call(move|c|{
+    pub async fn article_history(
+        &self,
+        signer: SignerKey,
+        publication: &str,
+    ) -> Result<Vec<VerifiedEvent>, ClientError> {
+        let publication = publication.to_owned();
+        self.db.call(move|c|{
             let bytes=c.prepare("SELECT json FROM verified_events WHERE signer=?1 AND kind=1 AND json_extract(CAST(json AS TEXT),'$.header.publication')=?2
                 ORDER BY json_extract(CAST(json AS TEXT),'$.header.revision') DESC,id DESC LIMIT 1000")?
                 .query_map(params![signer.to_string(),publication],|r|r.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
