@@ -5,13 +5,14 @@ pub struct TaskContext {
     pub id: uuid::Uuid,
     pub profile: Option<ProfileId>,
     pub generation: u64,
+    pub navigation: u64,
 }
 pub struct Snapshot {
     pub profiles: Vec<ProfileSummary>,
     pub active: Option<ProfileSummary>,
     pub vault: VaultStatus,
     pub articles: Vec<ArticleSummary>,
-    pub drafts: Vec<Draft>,
+    pub drafts: Vec<DraftSummary>,
     pub outbox: Vec<OutboxEntry>,
 }
 pub enum UiMessage {
@@ -21,7 +22,7 @@ pub enum UiMessage {
         title: String,
         text: String,
     },
-    History(Vec<murm_protocol::VerifiedEvent>),
+    History(Vec<ArticleSummary>),
     FormDone {
         snapshot: Box<Snapshot>,
         screen: Screen,
@@ -54,7 +55,10 @@ pub async fn load_snapshot(
         app.active_profile().await?
     };
     let (drafts, outbox) = if let Some(p) = &active {
-        (app.list_drafts(p.id).await?, app.outbox(p.id).await?)
+        (
+            app.list_draft_summaries(p.id).await?,
+            app.outbox(p.id).await?,
+        )
     } else {
         (vec![], vec![])
     };

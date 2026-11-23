@@ -27,8 +27,11 @@ directories.workspace = true
 rpassword.workspace = true
 tempfile.workspace = true
 ratatui.workspace = true
-crossterm.workspace = true
+crossterm = { workspace = true, features = ["event-stream"] }
+futures-util = "0.3"
 unicode-width.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+toml.workspace = true
+portable-pty = "0.9"

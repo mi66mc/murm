@@ -2,6 +2,7 @@ use super::*;
 use crate::*;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::{sync::Arc, time::Duration};
+use futures_util::StreamExt;
 pub enum UiEffect {
     Command(UiCommand),
     Submit(FormRequest, bool),
@@ -24,6 +25,7 @@ fn confirm(state: &mut AppState, command: UiCommand, text: String) {
     state.reduce(Action::Navigate(Screen::Confirm));
 }
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
+    if key.kind == KeyEventKind::Release { return None; }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         state.running = false;
         return Some(UiEffect::Exit);
@@ -35,6 +37,19 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
         state.invalidate_tasks();
         state.reduce(Action::Back);
         return Some(UiEffect::Cancel(action));
+    }
+    if state.form.is_none() && state.confirm.is_none() {
+        if let Some(Action::Navigate(screen)) = action_from_key(key) {
+            state.reduce(Action::Navigate(screen));
+            return None;
+        }
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            let screens = [Screen::Profiles, Screen::Articles, Screen::Drafts, Screen::Relays, Screen::Outbox];
+            let current = screens.iter().position(|s| *s == state.screen).unwrap_or(0);
+            let next = if key.code == KeyCode::Tab { (current + 1) % screens.len() } else { (current + screens.len() - 1) % screens.len() };
+            state.reduce(Action::Navigate(screens[next]));
+            return None;
+        }
     }
     if state.busy {
         if key.code == KeyCode::Char('?') {
@@ -167,17 +182,12 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
                     "Publicar com {}?\nPública: {}\nTítulo: {}\nPublicação: {} · revisão {}\nDestinos: {}\n\nO conteúdo é o rascunho salvo (Enter na lista permite ler antes).\nA confirmação remota será somente de armazenamento.",
                     p.name,
                     p.public_key,
-                    draft
-                        .header
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(""),
+                    draft.title,
                     draft.publication,
                     draft
-                        .header
-                        .get("revision")
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
+                        .revision
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "inválida".into()),
                     p.relays.join(", ")
                 );
                 let cmd = UiCommand::Publish(*profile, *id);
@@ -238,13 +248,20 @@ pub async fn run(app: ClientService) -> Result<(), ClientError> {
         ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))?;
     let (sender, mut receiver) = task_channel();
     let mut jobs = tokio::task::JoinSet::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(80));
+    let mut events = event::EventStream::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(16));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut dirty = true;
     while state.running {
-        terminal.draw(|frame| render(frame, &state))?;
         tokio::select! {
-            _=tick.tick()=>{
-                if !event::poll(Duration::ZERO)?{continue;}
-                let effect=match event::read()?{
+            _=tick.tick(), if dirty=>{
+                terminal.draw(|frame| render(frame, &state))?;
+                dirty = false;
+            }
+            next=events.next()=>{
+                let Some(next) = next else { break; };
+                dirty = true;
+                let effect=match next?{
                     Event::Key(key) if key.kind!=KeyEventKind::Release=>handle_key(&mut state,key),
                     Event::Paste(text)=>{
                         if let Some(form)=&mut state.form{form.type_text(text.trim_end_matches(['\r','\n']));}None
@@ -288,12 +305,12 @@ pub async fn run(app: ClientService) -> Result<(), ClientError> {
                 }
             }
             result=receiver.recv()=>{
-                if let Some(TaskResult{context,result})=result{
-                    if state.finish_task(context,result){
+                dirty = true;
+                if let Some(TaskResult{context,result})=result
+                    && state.finish_task(context,result){
                         let context=state.begin_task();let app=app.clone();
                         spawn(&mut jobs,sender.clone(),context,async move{Ok(UiMessage::Snapshot(Box::new(load_snapshot(&app,context.profile).await?)))});
                     }
-                }
             }
             _=jobs.join_next(),if !jobs.is_empty()=>{}
         }
