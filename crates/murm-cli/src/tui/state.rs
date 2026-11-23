@@ -1,8 +1,6 @@
 use super::Action;
 use super::{Form, Snapshot, TaskContext, UiMessage};
-use crate::{
-    ArticleSummary, Draft, OutboxEntry, ProfileMode, ProfileSummary, VaultActionId, VaultStatus,
-};
+use crate::{ArticleSummary, OutboxEntry, ProfileMode, ProfileSummary, VaultActionId, VaultStatus};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Profiles,
@@ -23,6 +21,7 @@ pub struct AppState {
     pub scroll: usize,
     pub help: bool,
     pub generation: u64,
+    navigation: u64,
     pub status: String,
     previous: Vec<Screen>,
     pub active: Option<ProfileSummary>,
@@ -32,11 +31,11 @@ pub struct AppState {
     pub busy: bool,
     pub vault_action: Option<VaultActionId>,
     pub articles: Vec<ArticleSummary>,
-    pub drafts: Vec<Draft>,
+    pub drafts: Vec<crate::DraftSummary>,
     pub outbox: Vec<OutboxEntry>,
     pub detail_title: String,
     pub detail: String,
-    pub history: Vec<murm_protocol::VerifiedEvent>,
+    pub history: Vec<ArticleSummary>,
     pub task: Option<uuid::Uuid>,
     pub confirm: Option<super::UiCommand>,
     pub confirmation_text: String,
@@ -50,6 +49,7 @@ impl Default for AppState {
             scroll: 0,
             help: false,
             generation: 0,
+            navigation: 0,
             status: String::new(),
             previous: vec![],
             active: None,
@@ -74,6 +74,32 @@ impl Default for AppState {
     }
 }
 impl AppState {
+    fn list_len(&self) -> Option<usize> {
+        match self.screen {
+            Screen::Profiles => Some(self.profiles.len()),
+            Screen::Articles => Some(self.articles.len()),
+            Screen::Drafts => Some(self.drafts.len()),
+            Screen::Relays => Some(self.active.as_ref().map_or(0, |p| p.relays.len())),
+            Screen::Outbox => Some(self.outbox.len()),
+            Screen::History => Some(self.history.len()),
+            _ => None,
+        }
+    }
+    fn move_selection(&mut self, down: bool, amount: usize) {
+        if let Some(len) = self.list_len() {
+            let current = self.selected.min(len.saturating_sub(1));
+            self.selected = if down {
+                current.saturating_add(amount).min(len.saturating_sub(1))
+            } else {
+                current.saturating_sub(amount)
+            };
+        }
+        self.scroll = if down {
+            self.scroll.saturating_add(amount)
+        } else {
+            self.scroll.saturating_sub(amount)
+        };
+    }
     pub fn can_sign(&self) -> bool {
         self.vault.unlocked
             && self
@@ -97,6 +123,7 @@ impl AppState {
             id: uuid::Uuid::new_v4(),
             profile: self.active.as_ref().map(|p| p.id),
             generation: self.generation,
+            navigation: self.navigation,
         };
         self.busy = true;
         self.task = Some(context.id);
@@ -120,15 +147,18 @@ impl AppState {
         self.busy = false;
         self.task = None;
         self.vault_action = None;
+        let same_screen = context.navigation == self.navigation;
         match message {
             UiMessage::Status(s) => self.status = s,
             UiMessage::Snapshot(s) => self.apply_snapshot(*s),
             UiMessage::Detail { title, text } => {
+                if !same_screen { return true; }
                 self.detail_title = title;
                 self.detail = text;
                 self.reduce(Action::Navigate(Screen::Article));
             }
             UiMessage::History(events) => {
+                if !same_screen { return true; }
                 self.history = events;
                 self.reduce(Action::Navigate(Screen::History));
             }
@@ -138,8 +168,10 @@ impl AppState {
                 status,
             } => {
                 self.apply_snapshot(*snapshot);
-                self.form = None;
-                self.reduce(Action::Navigate(screen));
+                if same_screen {
+                    self.form = None;
+                    self.reduce(Action::Navigate(screen));
+                }
                 self.status = status;
             }
         }
@@ -174,6 +206,8 @@ impl AppState {
         match action {
             Action::Navigate(screen) => {
                 if self.screen != screen {
+                    self.navigation = self.navigation.wrapping_add(1);
+                    if self.previous.len() >= 16 { self.previous.remove(0); }
                     self.previous.push(self.screen);
                     self.screen = screen;
                 }
@@ -181,24 +215,23 @@ impl AppState {
                 self.scroll = 0;
             }
             Action::Back => {
+                self.navigation = self.navigation.wrapping_add(1);
                 self.form = None;
                 self.screen = self.previous.pop().unwrap_or(Screen::Profiles);
                 self.selected = 0;
                 self.scroll = 0;
             }
             Action::Next => {
-                self.selected = self.selected.saturating_add(1);
-                self.scroll = self.scroll.saturating_add(1);
+                self.move_selection(true, 1);
             }
             Action::Previous => {
-                self.selected = self.selected.saturating_sub(1);
-                self.scroll = self.scroll.saturating_sub(1);
+                self.move_selection(false, 1);
             }
             Action::PageDown => {
-                self.scroll = self.scroll.saturating_add(10);
+                self.move_selection(true, 10);
             }
             Action::PageUp => {
-                self.scroll = self.scroll.saturating_sub(10);
+                self.move_selection(false, 10);
             }
             Action::Help => self.help = !self.help,
             Action::Quit => self.running = false,

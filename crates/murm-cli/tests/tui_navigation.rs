@@ -12,6 +12,28 @@ fn starts_at_profiles_when_empty() {
     assert_eq!(AppState::default().screen, Screen::Profiles);
 }
 #[test]
+fn navigation_bursts_work_while_background_task_is_busy() {
+    let mut state = AppState::default();
+    let context = state.begin_task();
+    for _ in 0..50 {
+        for c in ['2','3','4','5','1'] {
+            murm_cli::tui::handle_key(&mut state, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+    murm_cli::tui::handle_key(&mut state, KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
+    assert_eq!(state.screen, Screen::Relays);
+    assert!(state.apply_result(context, murm_cli::tui::UiMessage::Detail {title:"Late response".into(), text:"data".into()}));
+    assert_eq!(state.screen, Screen::Relays);
+    assert!(!state.busy);
+}
+#[test]
+fn key_release_does_not_navigate() {
+    let mut state = AppState::default();
+    let key = KeyEvent::new_with_kind(KeyCode::Char('3'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release);
+    murm_cli::tui::handle_key(&mut state, key);
+    assert_eq!(state.screen, Screen::Profiles);
+}
+#[test]
 fn escape_restores_previous_screen() {
     let mut state = AppState::default();
     state.reduce(Action::Navigate(Screen::Drafts));
@@ -34,6 +56,29 @@ fn ctrl_c_exits_cleanly() {
     state
         .reduce(action_from_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap());
     assert!(!state.running);
+}
+#[test]
+fn page_keys_move_bounded_list_selection() {
+    let profile = murm_cli::ProfileSummary {
+        id: uuid::Uuid::new_v4(),
+        name: "Reader".into(),
+        public_key: murm_protocol::derive_public_key(&[1; 32]),
+        mode: murm_cli::ProfileMode::ReadOnly,
+        locked: false,
+        relays: vec![],
+    };
+    let mut state = AppState::default();
+    state.profiles = vec![profile; 30];
+    state.reduce(Action::PageDown);
+    assert_eq!(state.selected, 10);
+    for _ in 0..5 {
+        state.reduce(Action::PageDown);
+    }
+    assert_eq!(state.selected, 29);
+    state.reduce(Action::Previous);
+    assert_eq!(state.selected, 28);
+    state.reduce(Action::PageUp);
+    assert_eq!(state.selected, 18);
 }
 struct Control {
     restored: Arc<AtomicUsize>,
