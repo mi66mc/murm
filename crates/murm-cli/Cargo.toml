@@ -27,6 +27,7 @@ directories.workspace = true
 rpassword.workspace = true
 tempfile.workspace = true
 ratatui.workspace = true
+ratatui-textarea = "0.9.4"
 crossterm = { workspace = true, features = ["event-stream"] }
 futures-util = "0.3"
 unicode-width.workspace = true

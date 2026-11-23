@@ -8,7 +8,6 @@ pub enum UiEffect {
     Submit(FormRequest, bool),
     Cancel(Option<VaultActionId>),
     Lock,
-    Editor(ProfileId, DraftId),
     Exit,
 }
 fn open_form(state: &mut AppState, kind: FormKind, target: Option<ProfileSummary>) {
@@ -26,6 +25,9 @@ fn confirm(state: &mut AppState, command: UiCommand, text: String) {
 }
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
     if key.kind == KeyEventKind::Release { return None; }
+    if state.screen==Screen::Editor && state.editor.is_some() {
+        return handle_editor_key(state,key);
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         state.running = false;
         return Some(UiEffect::Exit);
@@ -169,7 +171,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
                 let draft = state
                     .drafts
                     .get(state.selected.min(state.drafts.len().saturating_sub(1)))?;
-                return Some(UiEffect::Editor(p.id, draft.id));
+                return Some(UiEffect::Command(UiCommand::OpenEditor(p.id, draft.id)));
             }
         }
     }
@@ -215,6 +217,38 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
     if let Some(action) = action_from_key(key) {
         state.reduce(action);
     }
+    None
+}
+fn handle_editor_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
+    if let Some(leave)=state.editor_leave {
+        match key.code {
+            KeyCode::Char('y'|'Y') => {
+                state.editor=None;state.editor_leave=None;
+                if matches!(leave,EditorLeave::Quit) {state.running=false;return Some(UiEffect::Exit);}
+                state.reduce(Action::Back);
+            }
+            KeyCode::Char('n'|'N') | KeyCode::Esc => state.editor_leave=None,
+            _ => {}
+        }
+        return None;
+    }
+    if state.busy { return None; }
+    let quit=key.modifiers.contains(KeyModifiers::CONTROL) && key.code==KeyCode::Char('c');
+    if key.code==KeyCode::Esc || quit {
+        if state.editor.as_ref().is_some_and(|e|e.dirty) {
+            state.editor_leave=Some(if quit {EditorLeave::Quit} else {EditorLeave::Back});
+            return None;
+        }
+        state.editor=None;
+        if quit {state.running=false;return Some(UiEffect::Exit);}
+        state.reduce(Action::Back); return None;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code==KeyCode::Char('s') {
+        match state.editor.as_ref()?.draft_for_save() {
+            Ok(draft) => return Some(UiEffect::Command(UiCommand::SaveDraft(Box::new(draft)))),
+            Err(error) => state.status=error.to_string(),
+        }
+    } else if let Some(editor)=&mut state.editor { editor.input(key); }
     None
 }
 fn spawn(
@@ -264,7 +298,14 @@ pub async fn run(app: ClientService) -> Result<(), ClientError> {
                 let effect=match next?{
                     Event::Key(key) if key.kind!=KeyEventKind::Release=>handle_key(&mut state,key),
                     Event::Paste(text)=>{
-                        if let Some(form)=&mut state.form{form.type_text(text.trim_end_matches(['\r','\n']));}None
+                        if !state.busy {
+                            if state.screen==Screen::Editor && state.editor_leave.is_none() {
+                                if let Some(editor)=&mut state.editor {
+                                    if let Err(error)=editor.paste(&text) { state.status=error.to_string(); }
+                                }
+                            } else if let Some(form)=&mut state.form {form.type_text(text.trim_end_matches(['\r','\n']));}
+                        }
+                        None
                     }
                     _=>None,
                 };
@@ -276,17 +317,6 @@ pub async fn run(app: ClientService) -> Result<(), ClientError> {
                         state.status="Tela cancelada. Envios já iniciados não podem ser desfeitos.".into();
                     }
                     UiEffect::Lock=>{app.lock();state.status="Cofre bloqueado.".into();}
-                    UiEffect::Editor(profile,id)=>{
-                        guard.suspend()?;
-                        let result=app.edit_draft_external(profile,id).await;
-                        guard.resume()?;terminal.clear()?;
-                        let context=state.begin_task();let app=app.clone();let scope=context.profile;
-                        spawn(&mut jobs,sender.clone(),context,async move{
-                            let snapshot=load_snapshot(&app,scope).await?;
-                            Ok(UiMessage::FormDone{snapshot:Box::new(snapshot),screen:Screen::Drafts,
-                                status:match result{Ok(_)=>"Rascunho salvo; nenhuma assinatura foi criada.".into(),Err(error)=>format!("Editor: {error}. O rascunho anterior foi preservado.")}})
-                        });
-                    }
                     UiEffect::Command(command)=>{
                         if jobs.len()>=16{state.status="Aguarde as tarefas anteriores.".into();continue;}
                         let context=state.begin_task();let app=app.clone();
