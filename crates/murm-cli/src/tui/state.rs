@@ -13,6 +13,7 @@ pub enum Screen {
     Drafts,
     Outbox,
     Confirm,
+    Editor,
 }
 pub struct AppState {
     pub screen: Screen,
@@ -39,6 +40,8 @@ pub struct AppState {
     pub task: Option<uuid::Uuid>,
     pub confirm: Option<super::UiCommand>,
     pub confirmation_text: String,
+    pub editor: Option<super::DraftEditor>,
+    pub editor_leave: Option<super::EditorLeave>,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -70,6 +73,8 @@ impl Default for AppState {
             task: None,
             confirm: None,
             confirmation_text: String::new(),
+            editor: None,
+            editor_leave: None,
         }
     }
 }
@@ -149,6 +154,19 @@ impl AppState {
         self.vault_action = None;
         let same_screen = context.navigation == self.navigation;
         match message {
+            UiMessage::Editor(draft) => {
+                if !same_screen { return true; }
+                match super::DraftEditor::new(*draft) {
+                    Ok(editor) => { self.editor=Some(editor); self.reduce(Action::Navigate(Screen::Editor)); }
+                    Err(error) => self.status=error.to_string(),
+                }
+            }
+            UiMessage::DraftSaved(draft) => {
+                if let Some(editor)=&mut self.editor {
+                    if editor.draft.id==draft.id { editor.saved(*draft); }
+                }
+                self.status="Draft saved locally. Nothing was published.".into();
+            }
             UiMessage::Status(s) => self.status = s,
             UiMessage::Snapshot(s) => self.apply_snapshot(*s),
             UiMessage::Detail { title, text } => {

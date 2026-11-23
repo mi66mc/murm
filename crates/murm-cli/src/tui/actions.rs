@@ -33,6 +33,8 @@ pub fn action_from_key(key: KeyEvent) -> Option<Action> {
 }
 #[derive(Debug, Clone)]
 pub enum UiCommand {
+    OpenEditor(crate::ProfileId, crate::DraftId),
+    SaveDraft(Box<crate::Draft>),
     SelectProfile(crate::ProfileId),
     Refresh,
     Read(murm_protocol::EventId),
@@ -115,7 +117,7 @@ pub fn command_for_key(state: &super::AppState, key: KeyEvent) -> Option<UiComma
         Screen::History if key.code == KeyCode::Enter => state
             .history
             .get(state.selected.min(state.history.len().saturating_sub(1)))
-            .map(|e| UiCommand::Read(e.event().id)),
+            .map(|e| UiCommand::Read(e.id)),
         Screen::Outbox if key.code == KeyCode::Char('r') => Some(UiCommand::Retry(active?.id)),
         _ => None,
     }
@@ -128,6 +130,8 @@ pub async fn execute_command(
     use super::{UiMessage, load_snapshot};
     use crate::ClientError;
     match command {
+        UiCommand::OpenEditor(profile,id) => Ok(UiMessage::Editor(Box::new(app.load_draft(profile,id).await?))),
+        UiCommand::SaveDraft(draft) => Ok(UiMessage::DraftSaved(Box::new(app.save_draft(draft.profile_id,*draft).await?))),
         UiCommand::Read(id) => {
             let event = app.cached_event(id).await?.ok_or(ClientError::NotFound)?;
             let e = event.event();
@@ -166,7 +170,7 @@ pub async fn execute_command(
             })
         }
         UiCommand::History(signer, publication) => Ok(UiMessage::History(
-            app.article_history(signer, &publication).await?,
+            app.article_history_summaries(signer, &publication).await?,
         )),
         UiCommand::RelayInfo(profile, url) => Ok(UiMessage::Detail {
             title: format!("Políticas declaradas por {url}"),
@@ -191,14 +195,7 @@ pub async fn execute_command(
             })
         }
         UiCommand::Edit(profile, publication) => {
-            app.edit_publication(profile, &publication).await?;
-            Ok(UiMessage::FormDone {
-                snapshot: Box::new(load_snapshot(app, scope).await?),
-                screen: Screen::Drafts,
-                status:
-                    "Revisão criada como rascunho. Use e para editar; p para confirmar publicação."
-                        .into(),
-            })
+            Ok(UiMessage::Editor(Box::new(app.edit_publication(profile, &publication).await?)))
         }
         UiCommand::Publish(profile, draft) => {
             let id = app.publish(profile, draft).await?;

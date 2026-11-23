@@ -16,6 +16,8 @@ pub struct Snapshot {
     pub outbox: Vec<OutboxEntry>,
 }
 pub enum UiMessage {
+    Editor(Box<crate::Draft>),
+    DraftSaved(Box<crate::Draft>),
     Status(String),
     Snapshot(Box<Snapshot>),
     Detail {
