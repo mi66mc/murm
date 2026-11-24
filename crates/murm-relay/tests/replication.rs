@@ -260,3 +260,51 @@ fn failed_batch_commit_keeps_cursor() {
     assert_eq!(sql(&p, "SELECT COUNT(*) FROM publication_heads"), 0);
     assert_eq!(sql(&p, "SELECT COUNT(*) FROM peer_sync"), 0);
 }
+#[test]
+fn sync_wrapper_does_not_reduce_event_depth_budget() {
+    let mut draft = event("deep", 1, false, 100).event().unsigned();
+    draft
+        .header
+        .insert("extra".into(), serde_json::json!({"nested":{"value":true}}));
+    let event = sign_event(&draft, &[1; 32]).unwrap();
+    let wire =
+        serde_json::to_vec(&serde_json::json!({"events":[event],"cursor":"next","has_more":false}))
+            .unwrap();
+    assert!(
+        ValidatedSyncBatch::parse(
+            &wire,
+            &RelayInfo::default(),
+            ParseLimits {
+                max_bytes: 10000,
+                max_depth: 4
+            }
+        )
+        .is_ok()
+    );
+}
+#[test]
+fn seen_lifetime_matches_declared_policy() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("r.db");
+    let mut store = RelayStore::open(&p).unwrap();
+    let mut c = config();
+    c.info.propagation.seen_seconds = 5;
+    store.admit(&event("a", 1, false, 100), &c, 100).unwrap();
+    assert_eq!(sql(&p, "SELECT expires_at FROM seen_ids"), 105);
+}
+#[test]
+fn active_budget_suppresses_post_eviction_wave() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("r.db");
+    let mut store = RelayStore::open(&p).unwrap();
+    let mut c = config();
+    c.peers = vec!["http://127.0.0.1:9".into()];
+    c.info.propagation.seen_seconds = 0;
+    let event = event("a", 1, false, 100);
+    store.admit(&event, &c, 100).unwrap();
+    store
+        .evict(event.event().id, Some(RemovalReason::Policy), 101)
+        .unwrap();
+    store.admit(&event, &c, 102).unwrap();
+    assert_eq!(sql(&p, "SELECT COUNT(*) FROM propagation_jobs"), 0);
+}

@@ -19,7 +19,9 @@ impl ValidatedSyncBatch {
         source: &RelayInfo,
         limits: ParseLimits,
     ) -> Result<Self, StoreError> {
-        let value = parse_json(bytes, limits)?;
+        let mut outer_limits = limits;
+        outer_limits.max_depth = outer_limits.max_depth.saturating_add(2);
+        let value = parse_json(bytes, outer_limits)?;
         let cursor = value
             .get("cursor")
             .and_then(|v| v.as_str())
@@ -76,6 +78,7 @@ impl RelayStore {
         c: &RelayConfig,
         now: u64,
     ) -> Result<SyncImportReport, StoreError> {
+        self.configure_capacity(c.max_storage_bytes)?;
         let signature = hash(filters)?;
         let t = self.connection.transaction()?;
         expire(&t, now)?;
@@ -376,8 +379,9 @@ impl Replicator {
                 .response_bytes
                 .min(source.limits.response_bytes);
             let bytes = read_bounded(response, max).await?;
-            if status == 410 && !reset {
-                if serde_json::from_value::<Problem>(parse_json(
+            if status == 410
+                && !reset
+                && serde_json::from_value::<Problem>(parse_json(
                     &bytes,
                     ParseLimits {
                         max_bytes: max as usize,
@@ -385,11 +389,10 @@ impl Replicator {
                     },
                 )?)
                 .is_ok_and(|p| p.code == ProblemCode::CursorExpired)
-                {
-                    query.cursor = None;
-                    reset = true;
-                    continue;
-                }
+            {
+                query.cursor = None;
+                reset = true;
+                continue;
             }
             if status != 200 {
                 return Err(StoreError::Unavailable);

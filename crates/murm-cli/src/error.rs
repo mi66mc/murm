@@ -24,7 +24,9 @@ pub enum ClientError {
     #[error("network unavailable")]
     Network,
     #[error("database unavailable")]
-    Database(#[from] rusqlite::Error),
+    Database(rusqlite::Error),
+    #[error("local storage capacity reached; increase the configured limit or free local data")]
+    StorageFull,
     #[error("filesystem unavailable")]
     Io,
     #[error("another client is already using this database")]
@@ -37,6 +39,15 @@ pub enum ClientError {
     Relay(murm_protocol::ProblemCode),
     #[error("wait {0} seconds before retrying")]
     RetryAfter(u64),
+}
+impl From<rusqlite::Error> for ClientError {
+    fn from(error: rusqlite::Error) -> Self {
+        if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull) {
+            Self::StorageFull
+        } else {
+            Self::Database(error)
+        }
+    }
 }
 impl From<std::io::Error> for ClientError {
     fn from(_: std::io::Error) -> Self {

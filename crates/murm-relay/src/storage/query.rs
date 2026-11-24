@@ -118,6 +118,7 @@ impl RelayStore {
         c: &RelayConfig,
         now: u64,
     ) -> Result<QueryResponse, StoreError> {
+        self.configure_capacity(c.max_storage_bytes)?;
         validate_query(q, &c.info)?;
         expire(&self.connection, now)?;
         let mut binding = q.clone();
@@ -226,6 +227,26 @@ impl RelayStore {
             if ids.len() as u64 > c.info.limits.snapshot_events {
                 return Err(StoreError::Rejected(ProblemCode::LimitExceeded));
             }
+            if ids.len() as u64 <= q.limit {
+                let mut complete = QueryResponse {
+                    events: vec![],
+                    next_cursor: None,
+                };
+                let mut fits = true;
+                for id in &ids {
+                    if let Some(event) = read(&self.connection, id)? {
+                        complete.events.push(event);
+                        if encoded_len(&complete)? > c.info.limits.response_bytes {
+                            fits = false;
+                            break;
+                        }
+                    }
+                }
+                // No continuation token was issued, so no durable snapshot is needed.
+                if fits {
+                    return Ok(complete);
+                }
+            }
             let (count, used): (u64, u64) = self.connection.query_row(
                 "SELECT COUNT(*),COALESCE(SUM(event_count),0) FROM query_snapshots",
                 [],
@@ -290,6 +311,7 @@ impl RelayStore {
         c: &RelayConfig,
         now: u64,
     ) -> Result<SyncResponse, StoreError> {
+        self.configure_capacity(c.max_storage_bytes)?;
         validate_sync(q, &c.info)?;
         expire(&self.connection, now)?;
         let request_hash = hash(&q.filters)?;

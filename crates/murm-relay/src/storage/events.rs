@@ -110,7 +110,8 @@ pub(crate) fn admit_in_transaction(
         params![e.signer.to_string(),e.kind,meta.key.publication,meta.revision,id,status])?;
     let suppressed = t
         .query_row(
-            "SELECT 1 FROM seen_ids WHERE id=?1 AND expires_at>?2",
+            "SELECT 1 FROM seen_ids WHERE id=?1 AND expires_at>?2 UNION ALL
+             SELECT 1 FROM propagation_budgets WHERE event_id=?1 AND deadline>?2 LIMIT 1",
             params![id, now],
             |_| Ok(()),
         )
@@ -118,9 +119,7 @@ pub(crate) fn admit_in_transaction(
         .is_some();
     if !suppressed {
         let p = &c.info.propagation;
-        let expires = now
-            .saturating_add(p.seen_seconds.max(p.max_age_seconds))
-            .min(MAX_SAFE_INTEGER);
+        let expires = now.saturating_add(p.seen_seconds).min(MAX_SAFE_INTEGER);
         t.execute("INSERT INTO seen_ids(id,expires_at) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET expires_at=excluded.expires_at",params![id,expires])?;
         let queued: u64 = t.query_row(
             "SELECT COUNT(DISTINCT event_id) FROM propagation_jobs",
@@ -154,6 +153,7 @@ impl RelayStore {
         c: &RelayConfig,
         now: u64,
     ) -> Result<StoreReceipt, StoreError> {
+        self.configure_capacity(c.max_storage_bytes)?;
         let t = self.connection.transaction()?;
         expire(&t, now)?;
         let receipt = admit_in_transaction(&t, event, c, now)?;

@@ -14,7 +14,7 @@ struct Args {
     #[arg(long)]
     listen: Option<std::net::SocketAddr>,
 }
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut config = if let Some(path) = args.config {

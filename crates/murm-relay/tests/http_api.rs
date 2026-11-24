@@ -279,3 +279,23 @@ async fn bounded_body_before_parse() {
         ProblemCode::ContentTooLarge
     );
 }
+#[tokio::test]
+async fn kind_byte_limit_counts_original_received_bytes() {
+    let mut cfg = config();
+    cfg.info.kind_policies.overrides[0].event_bytes = Some(1000);
+    let s = start(cfg).await;
+    let event = event("sized", 1, false, 100);
+    let wire = format!(
+        "{}{}",
+        " ".repeat(1500),
+        serde_json::to_string(&event).unwrap()
+    );
+    let response = reqwest::Client::new()
+        .post(format!("{}/events", s.url))
+        .header("content-type", "application/json")
+        .body(wire)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 413);
+}

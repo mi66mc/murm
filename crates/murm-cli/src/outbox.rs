@@ -50,14 +50,28 @@ impl ClientService {
         }).await
     }
     pub async fn retry_event(&self, profile: ProfileId, id: EventId) -> Result<(), ClientError> {
-        let entry = self
-            .outbox(profile)
-            .await?
-            .into_iter()
-            .find(|e| e.event_id == id)
-            .ok_or(ClientError::NotFound)?;
-        for destination in entry.destinations {
-            let relay = destination.relay.clone();
+        let destinations = self
+            .db
+            .call(move |c| {
+                let exists: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM outbox WHERE profile_id=?1 AND event_id=?2)",
+                    params![profile.to_string(), id.to_string()],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    return Err(ClientError::NotFound);
+                }
+                let relays = c
+                    .prepare(
+                        "SELECT relay FROM outbox_destinations WHERE event_id=?1 ORDER BY relay",
+                    )?
+                    .query_map([id.to_string()], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(relays)
+            })
+            .await?;
+        for destination in destinations {
+            let relay = destination.clone();
             let now = self.clock.now_unix();
             let event=self.db.call(move|c|{
                 let t=c.transaction()?;
@@ -75,11 +89,9 @@ impl ClientService {
             let Some((event, attempts)) = event else {
                 continue;
             };
-            let result = RelayTransport::new(&destination.relay)?
-                .submit(&event)
-                .await;
+            let result = RelayTransport::new(&destination)?.submit(&event).await;
             let now = self.clock.now_unix();
-            let relay = destination.relay;
+            let relay = destination;
             self.db.call(move|c|{
                 match result{
                     Ok(receipt)=>{c.execute("UPDATE outbox_destinations SET state='stored',retain_until=?3,retry_at=NULL,last_error=NULL WHERE event_id=?1 AND relay=?2",params![id.to_string(),relay,receipt.retain_until])?;}
@@ -96,8 +108,15 @@ impl ClientService {
         Ok(())
     }
     pub async fn retry_outbox(&self, profile: ProfileId) -> Result<(), ClientError> {
-        for entry in self.outbox(profile).await?.into_iter().take(100) {
-            self.retry_event(profile, entry.event_id).await?;
+        let now = self.clock.now_unix();
+        let ids = self.db.call(move |c| {
+            let ids = c.prepare("SELECT o.event_id FROM outbox o WHERE o.profile_id=?1 AND EXISTS (SELECT 1 FROM outbox_destinations d WHERE d.event_id=o.event_id AND d.state IN ('pending','retry_at') AND (d.retry_at IS NULL OR d.retry_at<=?2)) ORDER BY o.created_at,o.event_id LIMIT 100")?
+                .query_map(params![profile.to_string(), now], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.into_iter().map(|id| id.parse().map_err(ClientError::from)).collect::<Result<Vec<EventId>, _>>()
+        }).await?;
+        for id in ids {
+            self.retry_event(profile, id).await?;
         }
         Ok(())
     }

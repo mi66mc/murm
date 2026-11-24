@@ -26,7 +26,7 @@ pub(crate) struct DbWorker {
     inner: Arc<Inner>,
 }
 impl DbWorker {
-    pub fn open(path: PathBuf) -> Result<Self, ClientError> {
+    pub fn open(path: PathBuf, capacity: u64) -> Result<Self, ClientError> {
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -40,6 +40,16 @@ impl DbWorker {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         migrations::migrate(&mut connection)?;
+        let page_size: u64 = connection.pragma_query_value(None, "page_size", |r| r.get(0))?;
+        let pages = capacity / page_size;
+        if pages == 0 {
+            return Err(ClientError::StorageFull);
+        }
+        connection.pragma_update(None, "max_page_count", pages)?;
+        let actual: u64 = connection.pragma_query_value(None, "max_page_count", |r| r.get(0))?;
+        if actual > pages {
+            return Err(ClientError::StorageFull);
+        }
         let (sender, mut receiver) = mpsc::channel::<Work>(64);
         let thread = std::thread::Builder::new()
             .name("murm-client-sqlite".into())
