@@ -11,6 +11,34 @@ fn rejects_inconsistent_info_policy() {
     assert!(c.validate().is_err());
 }
 #[test]
+fn rejects_unimplemented_advertised_capabilities() {
+    let mut c = RelayConfig::default();
+    c.info.header_filters.push(murm_protocol::HeaderCapability {
+        kind: 1,
+        path: "/invented".into(),
+        ops: vec![murm_protocol::HeaderOp::Eq],
+    });
+    assert!(c.validate().is_err());
+    let mut c = RelayConfig::default();
+    c.info.limits.json_depth = 1000;
+    assert!(c.validate().is_err());
+}
+#[test]
+fn config_advertisements_and_json_null_policy() {
+    let mut invalid = RelayConfig::default();
+    invalid.info.versions = vec![2];
+    assert!(invalid.validate().is_err());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay.json");
+    let mut c = RelayConfig::default();
+    c.info.kind_policies.overrides[0].retention_seconds = Some(None);
+    c.info.kind_policies.overrides[0].max_retention_seconds = Some(None);
+    std::fs::write(&path, serde_json::to_vec(&c).unwrap()).unwrap();
+    let parsed = RelayConfig::load(&path).unwrap();
+    assert_eq!(parsed.info.effective_policy(1).retention_seconds, None);
+    assert_eq!(parsed.info.effective_policy(1).max_retention_seconds, None);
+}
+#[test]
 fn migrations_are_repeatable() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("relay.sqlite");

@@ -15,6 +15,18 @@ pub struct Draft {
     pub version: u64,
     pub queued_event_id: Option<EventId>,
 }
+/// Bounded list DTO: never loads the article source into a UI snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftSummary {
+    pub id: DraftId,
+    pub profile_id: ProfileId,
+    pub publication: String,
+    pub title: String,
+    pub revision: Option<u64>,
+    pub status: String,
+    pub version: u64,
+    pub queued_event_id: Option<EventId>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArticleSummary {
     pub id: EventId,
@@ -63,7 +75,53 @@ fn next_revision(c: &Connection, key: SignerKey, publication: &str) -> Result<u6
     }
     Ok(current + 1)
 }
+fn summarize(c: &Connection, event: &VerifiedEvent) -> Result<ArticleSummary, ClientError> {
+    let meta = validate_publication(event)?;
+    let conflicts:u64=c.query_row("SELECT COUNT(*) FROM verified_events WHERE signer=?1 AND kind=1 AND json_extract(CAST(json AS TEXT),'$.header.publication')=?2 AND json_extract(CAST(json AS TEXT),'$.header.revision')=?3",
+        params![meta.key.signer.to_string(),meta.key.publication,meta.revision],|r|r.get(0))?;
+    Ok(ArticleSummary {
+        id: meta.id,
+        signer: meta.key.signer,
+        publication: meta.key.publication,
+        revision: meta.revision,
+        status: meta.status,
+        title: event
+            .event()
+            .header
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        created_at: event.event().created_at,
+        conflicts: conflicts > 1,
+    })
+}
 impl ClientService {
+    pub async fn list_draft_summaries(
+        &self,
+        profile: ProfileId,
+    ) -> Result<Vec<DraftSummary>, ClientError> {
+        self.db.call(move|c|{
+            let mut statement=c.prepare("SELECT id,publication,
+                substr(CAST(COALESCE(json_extract(header,'$.title'),'') AS TEXT),1,200),
+                json_extract(header,'$.revision'),substr(CAST(COALESCE(json_extract(header,'$.status'),'') AS TEXT),1,16),
+                version,queued_event_id FROM drafts WHERE profile_id=?1 ORDER BY rowid DESC LIMIT 1000")?;
+            let rows=statement.query_map([profile.to_string()],|r|Ok((
+                r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
+                r.get::<_,rusqlite::types::Value>(3)?,r.get::<_,String>(4)?,r.get::<_,u64>(5)?,r.get::<_,Option<String>>(6)?)))?;
+            let mut summaries=Vec::new();
+            for row in rows{
+                let (id,publication,title,number,status,version,queued)=row?;
+                let revision=match number{
+                    rusqlite::types::Value::Integer(n) if n>0 && n as u64<=MAX_SAFE_INTEGER=>Some(n as u64),
+                    rusqlite::types::Value::Real(n) if n>0.0 && n.fract()==0.0 && n<=MAX_SAFE_INTEGER as f64=>Some(n as u64),
+                    _=>None,
+                };
+                summaries.push(DraftSummary{id:id.parse().map_err(|_|ClientError::InvalidInput)?,profile_id:profile,publication,title,revision,status,version,
+                    queued_event_id:queued.map(|s|s.parse().map_err(ClientError::from)).transpose()?});
+            }Ok(summaries)
+        }).await
+    }
     pub async fn create_draft(
         &self,
         profile: ProfileId,
@@ -211,14 +269,12 @@ impl ClientService {
         self.db.call(move|c|{
             let sql=if include_withdrawn{"SELECT e.json FROM publication_heads h JOIN verified_events e ON e.id=h.id ORDER BY e.created_at DESC,e.id DESC LIMIT 1000"}
                 else{"SELECT e.json FROM publication_heads h JOIN verified_events e ON e.id=h.id WHERE h.status='published' ORDER BY e.created_at DESC,e.id DESC LIMIT 1000"};
-            let bytes=c.prepare(sql)?.query_map([],|r|r.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
+            let mut statement=c.prepare(sql)?;let mut rows=statement.query([])?;
             let mut result=Vec::new();
-            for bytes in bytes{
-                let event=parse_and_verify(&bytes,ParseLimits{max_bytes:bytes.len(),max_depth:128})?;let meta=validate_publication(&event)?;
-                let conflicts:u64=c.query_row("SELECT COUNT(*) FROM verified_events WHERE signer=?1 AND kind=1 AND json_extract(CAST(json AS TEXT),'$.header.publication')=?2 AND json_extract(CAST(json AS TEXT),'$.header.revision')=?3",
-                    params![meta.key.signer.to_string(),meta.key.publication,meta.revision],|r|r.get(0))?;
-                result.push(ArticleSummary{id:meta.id,signer:meta.key.signer,publication:meta.key.publication,revision:meta.revision,status:meta.status,
-                    title:event.event().header.get("title").and_then(Value::as_str).unwrap_or("").into(),created_at:event.event().created_at,conflicts:conflicts>1});
+            while let Some(row)=rows.next()?{
+                let bytes:Vec<u8>=row.get(0)?;
+                let event=parse_and_verify(&bytes,ParseLimits{max_bytes:bytes.len(),max_depth:128})?;
+                result.push(summarize(c,&event)?);
             }
             Ok(result)
         }).await
@@ -234,6 +290,23 @@ impl ClientService {
                 ORDER BY json_extract(CAST(json AS TEXT),'$.header.revision') DESC,id DESC LIMIT 1000")?
                 .query_map(params![signer.to_string(),publication],|r|r.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
             bytes.into_iter().map(|b|parse_and_verify(&b,ParseLimits{max_bytes:b.len(),max_depth:128}).map_err(ClientError::from)).collect()
+        }).await
+    }
+    pub async fn article_history_summaries(
+        &self,
+        signer: SignerKey,
+        publication: &str,
+    ) -> Result<Vec<ArticleSummary>, ClientError> {
+        let publication = publication.to_owned();
+        self.db.call(move|c|{
+            let mut statement=c.prepare("SELECT json FROM verified_events WHERE signer=?1 AND kind=1 AND json_extract(CAST(json AS TEXT),'$.header.publication')=?2
+                ORDER BY json_extract(CAST(json AS TEXT),'$.header.revision') DESC,id DESC LIMIT 1000")?;
+            let mut rows=statement.query(params![signer.to_string(),publication])?;let mut summaries=Vec::new();
+            while let Some(row)=rows.next()?{
+                let bytes:Vec<u8>=row.get(0)?;
+                let event=parse_and_verify(&bytes,ParseLimits{max_bytes:bytes.len(),max_depth:128})?;
+                summaries.push(summarize(c,&event)?);
+            }Ok(summaries)
         }).await
     }
 }

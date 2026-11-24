@@ -10,16 +10,23 @@ pub struct ClientService {
     pub(crate) clock: std::sync::Arc<dyn ClientClock>,
 }
 impl ClientService {
+    pub const DEFAULT_DATABASE_BYTES: u64 = 2147483648;
     pub fn open(data_dir: &Path) -> Result<Self, ClientError> {
         Self::open_db(&data_dir.join("client.sqlite"))
     }
+    pub fn open_with_capacity(data_dir: &Path, bytes: u64) -> Result<Self, ClientError> {
+        Self::open_db_with_capacity(&data_dir.join("client.sqlite"), bytes)
+    }
     pub fn open_db(path: &Path) -> Result<Self, ClientError> {
+        Self::open_db_with_capacity(path, Self::DEFAULT_DATABASE_BYTES)
+    }
+    pub fn open_db_with_capacity(path: &Path, bytes: u64) -> Result<Self, ClientError> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
         let (events, _) = tokio::sync::broadcast::channel(64);
         Ok(Self {
-            db: DbWorker::open(path.to_owned())?,
+            db: DbWorker::open(path.to_owned(), bytes)?,
             path: path.to_owned(),
             vault: Default::default(),
             events,

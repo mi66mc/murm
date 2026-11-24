@@ -95,10 +95,15 @@ impl ClientService {
         let url = validate_url(url)?;
         self.db
             .call(move |c| {
-                c.execute(
+                let transaction=c.transaction()?;
+                transaction.execute(
                     "DELETE FROM profile_relays WHERE profile_id=?1 AND url=?2",
                     params![profile.to_string(), url],
                 )?;
+                transaction.execute("UPDATE outbox_destinations SET state='refused',retry_at=NULL,last_error='relay removed locally'
+                    WHERE relay=?2 AND state IN ('pending','retry_at') AND event_id IN (SELECT event_id FROM outbox WHERE profile_id=?1)",
+                    params![profile.to_string(),url])?;
+                transaction.commit()?;
                 Ok(())
             })
             .await

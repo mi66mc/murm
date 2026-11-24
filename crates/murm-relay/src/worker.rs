@@ -8,7 +8,11 @@ pub struct DbWorker {
 }
 impl DbWorker {
     pub fn open(path: PathBuf) -> Result<Self, StoreError> {
+        Self::open_with_capacity(path, 536870912)
+    }
+    pub fn open_with_capacity(path: PathBuf, bytes: u64) -> Result<Self, StoreError> {
         let mut store = RelayStore::open(&path)?;
+        store.configure_capacity(bytes)?;
         let (sender, mut receiver) = mpsc::channel::<Work>(64);
         std::thread::Builder::new()
             .name("murm-relay-sqlite".into())

@@ -178,3 +178,67 @@ async fn switching_profile_keeps_outbox_owner() {
     assert!(app.outbox(other.id).await.unwrap().is_empty());
     assert_eq!(app.outbox(p).await.unwrap()[0].event_id, id);
 }
+#[tokio::test]
+async fn removing_relay_cancels_pending_destinations() {
+    let (_dir, app, p, _) = signer().await;
+    let draft = app.create_draft(p, "Title", "body").await.unwrap();
+    app.publish(p, draft.id).await.unwrap();
+    app.remove_relay(p, "http://127.0.0.1:9").await.unwrap();
+    assert_eq!(
+        app.outbox(p).await.unwrap()[0].destinations[0].state,
+        DestinationState::Refused
+    );
+}
+#[tokio::test]
+async fn retry_all_does_not_starve_older_pending_entries() {
+    let relay = server(vec![]).await;
+    let (_dir, app, p, clock) = signer().await;
+    app.remove_relay(p, "http://127.0.0.1:9").await.unwrap();
+    app.add_relay(p, &relay.url).await.unwrap();
+    let draft = app.create_draft(p, "Old", "pending").await.unwrap();
+    let old = app.publish(p, draft.id).await.unwrap();
+    let mut db = rusqlite::Connection::open(app.database_path()).unwrap();
+    let transaction = db.transaction().unwrap();
+    for n in 0..1001 {
+        let event = common::event(&format!("stored-{n}"), 200 + n);
+        let id = event.event().id.to_string();
+        transaction
+            .execute(
+                "INSERT INTO outbox(event_id,profile_id,json,created_at) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![
+                    id,
+                    p.to_string(),
+                    serde_json::to_vec(&event).unwrap(),
+                    200 + n
+                ],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO outbox_destinations(event_id,relay,state) VALUES(?1,?2,'stored')",
+                rusqlite::params![id, relay.url],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    relay.script.lock().unwrap().responses.push_back((
+        201,
+        serde_json::to_string(&StoreReceipt {
+            id: old,
+            status: StoreStatus::Stored,
+            retain_until: Some(20000),
+        })
+        .unwrap(),
+    ));
+    clock.0.store(10000, Ordering::SeqCst);
+    app.retry_outbox(p).await.unwrap();
+    assert_eq!(relay.script.lock().unwrap().requests.len(), 1);
+    let state: String = db
+        .query_row(
+            "SELECT state FROM outbox_destinations WHERE event_id=?1",
+            [old.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "stored");
+}

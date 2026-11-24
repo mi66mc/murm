@@ -5,6 +5,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
     pub events: Vec<Event>,
+    #[serde(deserialize_with = "required_nullable")]
     pub next_cursor: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,7 @@ pub enum StoreStatus {
 pub struct StoreReceipt {
     pub id: EventId,
     pub status: StoreStatus,
+    #[serde(deserialize_with = "required_nullable")]
     pub retain_until: Option<u64>,
 }
 
@@ -73,8 +75,15 @@ pub struct Limits {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KindPolicy {
     pub event_bytes: u64,
+    #[serde(deserialize_with = "required_nullable")]
     pub retention_seconds: Option<u64>,
+    #[serde(deserialize_with = "required_nullable")]
     pub max_retention_seconds: Option<u64>,
+}
+fn required_nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
 }
 fn nullable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u64>>, D::Error> {
     Option::<u64>::deserialize(d).map(Some)

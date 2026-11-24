@@ -217,3 +217,19 @@ fn expired_rows_do_not_loop() {
     q.cursor = Some(first.cursor);
     assert!(!s.sync(&q, &c, 121).unwrap().has_more);
 }
+#[test]
+fn completed_current_queries_do_not_consume_snapshot_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = RelayStore::open(&dir.path().join("r.db")).unwrap();
+    let mut c = config();
+    c.max_snapshots = 1;
+    store.admit(&event("a", 1, false, 100), &c, 100).unwrap();
+    let mut q = query();
+    q.view = Some(QueryView::Current);
+    q.filters = vec![Filter {
+        kinds: Some(vec![1]),
+        ..Default::default()
+    }];
+    assert!(store.query(&q, &c, 100).unwrap().next_cursor.is_none());
+    assert!(store.query(&q, &c, 100).is_ok());
+}

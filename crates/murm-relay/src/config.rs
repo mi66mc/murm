@@ -39,8 +39,22 @@ impl Default for RelayConfig {
 }
 impl RelayConfig {
     pub fn load(path: &Path) -> Result<Self, StoreError> {
-        let c: Self =
-            toml::from_str(&std::fs::read_to_string(path)?).map_err(|_| StoreError::Config)?;
+        let text = std::fs::read_to_string(path)?;
+        if text.len() > 4194304 {
+            return Err(StoreError::Config);
+        }
+        let c: Self = if text.trim_start().starts_with('{') {
+            serde_json::from_value(parse_json(
+                text.as_bytes(),
+                ParseLimits {
+                    max_bytes: 4194304,
+                    max_depth: 64,
+                },
+            )?)
+            .map_err(|_| StoreError::Config)?
+        } else {
+            toml::from_str(&text).map_err(|_| StoreError::Config)?
+        };
         c.validate()?;
         Ok(c)
     }
@@ -53,6 +67,8 @@ impl RelayConfig {
             || self.max_snapshot_events == 0
             || self.peer_timeout_seconds == 0
             || self.sync_interval_seconds == 0
+            || self.info.versions != [1]
+            || self.info.profiles != ["publications-test-v1"]
             || self.info.accepted_kinds != [1]
             || self.info.validated_kinds != [1]
             || self.info.features.current_kinds != [1]
@@ -66,7 +82,26 @@ impl RelayConfig {
         {
             return Err(StoreError::Config);
         }
-        for cap in RelayInfo::default().header_filters {
+        let supported = RelayInfo::default().header_filters;
+        if self.info.header_filters.len() != supported.len()
+            || self.info.limits.json_depth > 64
+            || self.info.limits.cursor_bytes < 1024
+            || self.info.limits.filters.saturating_mul(
+                self.info
+                    .limits
+                    .filter_values
+                    .saturating_mul(2)
+                    .saturating_add(self.info.limits.header_conditions.saturating_mul(3))
+                    .saturating_add(2),
+            ) > 30000
+            || serde_json::to_vec(&self.info)
+                .map_err(|_| StoreError::Config)?
+                .len() as u64
+                > self.info.limits.response_bytes
+        {
+            return Err(StoreError::Config);
+        }
+        for cap in supported {
             if !self
                 .info
                 .header_filters

@@ -12,7 +12,7 @@ mod transport;
 pub mod tui;
 mod vault;
 pub use app::{ClientClock, ClientService};
-pub use articles::{ArticleSummary, Draft, DraftId};
+pub use articles::{ArticleSummary, Draft, DraftId, DraftSummary};
 pub use editor::EditorConfig;
 pub use error::ClientError;
 pub use outbox::{DestinationState, DestinationStatus, OutboxEntry};

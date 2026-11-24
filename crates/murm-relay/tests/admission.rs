@@ -134,3 +134,25 @@ fn full_head_budget_refuses_new_work() {
     s.admit(&event("a", 2, false, 100), &c, 100).unwrap();
     assert_eq!(sql(&p, "SELECT COUNT(*) FROM events"), 2);
 }
+#[test]
+fn metadata_cannot_grow_past_total_database_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay.db");
+    let mut store = RelayStore::open(&path).unwrap();
+    let mut c = config();
+    c.max_storage_bytes = 131072;
+    c.info.kind_policies.overrides[0].retention_seconds = Some(Some(0));
+    c.info.kind_policies.overrides[0].max_retention_seconds = Some(Some(0));
+    let mut refused = false;
+    for revision in 1..=1000 {
+        if let Err(error) = store.admit(&event("same-work", revision, false, 100), &c, 100) {
+            assert_eq!(error.code(), ProblemCode::TemporarilyUnavailable);
+            refused = true;
+            break;
+        }
+    }
+    assert!(
+        refused,
+        "expired bodies must not allow unbounded metadata growth"
+    );
+}

@@ -11,7 +11,8 @@ pub struct RelayService {
 impl RelayService {
     pub fn open(config: RelayConfig, clock: Arc<dyn Clock>) -> Result<Self, StoreError> {
         config.validate()?;
-        let db = DbWorker::open(config.database_path.clone())?;
+        let db =
+            DbWorker::open_with_capacity(config.database_path.clone(), config.max_storage_bytes)?;
         Ok(Self {
             config: Arc::new(config),
             db,
@@ -26,7 +27,11 @@ impl RelayService {
             if bytes.len() as u64 > config.info.limits.event_bytes {
                 return Err(ProtocolError::ContentTooLarge);
             }
-            parse_and_verify(&bytes, config.info.parse_limits())
+            let event = parse_and_verify(&bytes, config.info.parse_limits())?;
+            if bytes.len() as u64 > config.info.effective_policy(event.event().kind).event_bytes {
+                return Err(ProtocolError::ContentTooLarge);
+            }
+            Ok(event)
         })
         .await
         .map_err(|_| StoreError::Unavailable)??;

@@ -53,10 +53,10 @@ impl IntoResponse for ApiError {
             "content-type",
             HeaderValue::from_static("application/problem+json"),
         );
-        if let Some(n) = self.retry {
-            if let Ok(value) = HeaderValue::from_str(&n.to_string()) {
-                response.headers_mut().insert("retry-after", value);
-            }
+        if let Some(n) = self.retry
+            && let Ok(value) = HeaderValue::from_str(&n.to_string())
+        {
+            response.headers_mut().insert("retry-after", value);
         }
         response
     }
