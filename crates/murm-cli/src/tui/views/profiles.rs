@@ -49,25 +49,30 @@ pub struct FormOutcome {
 impl Form {
     pub fn new(kind: FormKind, vault: VaultStatus, target: Option<ProfileSummary>) -> Self {
         let mut specs = match kind {
-            FormKind::Generate => vec![("name", "Nome local", false, 320)],
+            FormKind::Generate => vec![("name", "Local name", false, 320)],
             FormKind::ImportPrivate => vec![
-                ("name", "Nome local", false, 320),
-                ("seed", "Seed privada (64 hex)", true, 64),
-                ("public", "Pública opcional (64 hex)", false, 64),
+                ("name", "Local name", false, 320),
+                ("seed", "Private seed (64 hex)", true, 64),
+                ("public", "Optional public key (64 hex)", false, 64),
             ],
             FormKind::ImportPublic => vec![
-                ("name", "Nome local", false, 320),
-                ("public", "Chave pública (64 hex)", false, 64),
+                ("name", "Local name", false, 320),
+                ("public", "Public key (64 hex)", false, 64),
             ],
             FormKind::Unlock => vec![],
             FormKind::ChangePassword => vec![
-                ("current", "Senha atual", true, 4096),
-                ("new", "Nova senha", true, 4096),
-                ("confirm", "Confirme a nova senha", true, 4096),
+                ("current", "Current password", true, 4096),
+                ("new", "New password", true, 4096),
+                ("confirm", "Confirm new password", true, 4096),
             ],
-            FormKind::Rename => vec![("name", "Novo nome local", false, 320)],
-            FormKind::AddRelay => vec![("url", "URL do relay (HTTPS; HTTP só local)", false, 2048)],
-            FormKind::NewDraft => vec![("title", "Título do artigo", false, 800)],
+            FormKind::Rename => vec![("name", "New local name", false, 320)],
+            FormKind::AddRelay => vec![(
+                "url",
+                "Relay URL (HTTPS; HTTP on loopback only)",
+                false,
+                2048,
+            )],
+            FormKind::NewDraft => vec![("title", "Article title", false, 800)],
         };
         if matches!(
             kind,
@@ -77,15 +82,15 @@ impl Form {
             specs.push((
                 "password",
                 if vault.exists {
-                    "Senha local"
+                    "Local password"
                 } else {
-                    "Crie uma senha local (mínimo 12 caracteres)"
+                    "Create a local password (at least 12 characters)"
                 },
                 true,
                 4096,
             ));
             if !vault.exists {
-                specs.push(("confirm", "Confirme a senha", true, 4096));
+                specs.push(("confirm", "Confirm password", true, 4096));
             }
         }
         let mut fields = specs
@@ -98,10 +103,10 @@ impl Form {
                 max,
             })
             .collect::<Vec<_>>();
-        if kind == FormKind::Rename {
-            if let (Some(field), Some(profile)) = (fields.first_mut(), &target) {
-                field.value.push_str(&profile.name);
-            }
+        if kind == FormKind::Rename
+            && let (Some(field), Some(profile)) = (fields.first_mut(), &target)
+        {
+            field.value.push_str(&profile.name);
         }
         Self {
             kind,
@@ -111,18 +116,29 @@ impl Form {
             target,
         }
     }
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            FormKind::Generate => "Create identity",
+            FormKind::ImportPrivate => "Import private key",
+            FormKind::ImportPublic => "Import public key",
+            FormKind::Unlock => "Unlock local vault",
+            FormKind::ChangePassword => "Change vault password",
+            FormKind::Rename => "Rename profile",
+            FormKind::AddRelay => "Add relay",
+            FormKind::NewDraft => "New article",
+        }
+    }
     pub fn requires_vault(&self) -> bool {
         matches!(self.kind, FormKind::Unlock | FormKind::ChangePassword)
             || (matches!(self.kind, FormKind::Generate | FormKind::ImportPrivate)
                 && !self.vault.unlocked)
     }
     pub fn type_text(&mut self, text: &str) {
-        if let Some(field) = self.fields.get_mut(self.focused) {
-            if !text.chars().any(char::is_control)
-                && field.value.len().saturating_add(text.len()) <= field.max
-            {
-                field.value.push_str(text);
-            }
+        if let Some(field) = self.fields.get_mut(self.focused)
+            && !text.chars().any(char::is_control)
+            && field.value.len().saturating_add(text.len()) <= field.max
+        {
+            field.value.push_str(text);
         }
     }
     pub fn backspace(&mut self) {
@@ -257,6 +273,6 @@ pub async fn execute_form(
     Ok(FormOutcome {
         profile,
         screen,
-        status: "Operação local concluída.".into(),
+        status: "Local operation completed.".into(),
     })
 }

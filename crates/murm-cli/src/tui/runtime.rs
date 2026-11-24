@@ -1,8 +1,8 @@
 use super::*;
 use crate::*;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use std::{sync::Arc, time::Duration};
 use futures_util::StreamExt;
+use std::{sync::Arc, time::Duration};
 pub enum UiEffect {
     Command(UiCommand),
     Submit(FormRequest, bool),
@@ -24,9 +24,22 @@ fn confirm(state: &mut AppState, command: UiCommand, text: String) {
     state.reduce(Action::Navigate(Screen::Confirm));
 }
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
-    if key.kind == KeyEventKind::Release { return None; }
-    if state.screen==Screen::Editor && state.editor.is_some() {
-        return handle_editor_key(state,key);
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    if state.help {
+        if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
+            state.help = false;
+            return None;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            state.help = false;
+        } else {
+            return None;
+        }
+    }
+    if state.screen == Screen::Editor && state.editor.is_some() {
+        return handle_editor_key(state, key);
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         state.running = false;
@@ -46,9 +59,19 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
             return None;
         }
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-            let screens = [Screen::Profiles, Screen::Articles, Screen::Drafts, Screen::Relays, Screen::Outbox];
+            let screens = [
+                Screen::Profiles,
+                Screen::Articles,
+                Screen::Drafts,
+                Screen::Relays,
+                Screen::Outbox,
+            ];
             let current = screens.iter().position(|s| *s == state.screen).unwrap_or(0);
-            let next = if key.code == KeyCode::Tab { (current + 1) % screens.len() } else { (current + screens.len() - 1) % screens.len() };
+            let next = if key.code == KeyCode::Tab {
+                (current + 1) % screens.len()
+            } else {
+                (current + screens.len() - 1) % screens.len()
+            };
             state.reduce(Action::Navigate(screens[next]));
             return None;
         }
@@ -136,7 +159,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
                 state,
                 UiCommand::RemoveProfile(p.id),
                 format!(
-                    "Remover perfil local {}?\n{}\n\nA chave cifrada e os rascunhos deste perfil serão removidos deste banco. Se esta for a única cópia da chave, você perderá o controle da identidade.\nNada será apagado dos relays.",
+                    "Remove local profile {}?\n{}\n\nIts encrypted key and drafts will be removed from this database. If this is the only copy of the key, you will lose control of the identity.\nNothing will be erased from relays.",
                     p.name, p.public_key
                 ),
             );
@@ -157,7 +180,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
                 confirm(
                     state,
                     UiCommand::RemoveRelay(p.id, url.clone()),
-                    format!("Remover contato local {url}? Nenhum dado remoto será apagado."),
+                    format!("Remove local contact {url}? No remote data will be erased."),
                 );
                 return None;
             }
@@ -175,13 +198,22 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
             }
         }
     }
+    if state.screen == Screen::Outbox && key.code == KeyCode::Enter {
+        let entry = state
+            .outbox
+            .get(state.selected.min(state.outbox.len().saturating_sub(1)))?;
+        state.detail_title = "Outbox destination details".into();
+        state.detail = super::views::outbox::entry_details(entry);
+        state.reduce(Action::Navigate(Screen::Article));
+        return None;
+    }
     if let Some(command) = command_for_key(state, key) {
         match &command {
             UiCommand::Publish(profile, id) => {
                 let p = state.active.as_ref()?;
                 let draft = state.drafts.iter().find(|d| d.id == *id)?;
                 let text = format!(
-                    "Publicar com {}?\nPública: {}\nTítulo: {}\nPublicação: {} · revisão {}\nDestinos: {}\n\nO conteúdo é o rascunho salvo (Enter na lista permite ler antes).\nA confirmação remota será somente de armazenamento.",
+                    "Publish as {}?\nPublic key: {}\nTitle: {}\nPublication: {} · revision {}\nDestinations: {}\n\nThis publishes the saved draft (Enter in the list reads it first).\nRemote confirmation means storage only.",
                     p.name,
                     p.public_key,
                     draft.title,
@@ -189,7 +221,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
                     draft
                         .revision
                         .map(|n| n.to_string())
-                        .unwrap_or_else(|| "inválida".into()),
+                        .unwrap_or_else(|| "invalid".into()),
                     p.relays.join(", ")
                 );
                 let cmd = UiCommand::Publish(*profile, *id);
@@ -199,7 +231,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
             UiCommand::Withdraw(profile, publication) => {
                 let p = state.active.as_ref()?;
                 let text = format!(
-                    "Retirar publicação {publication}?\nPerfil: {}\nPública: {}\n\nSerá assinada uma nova revisão com content null. Cópias antigas não são apagadas.",
+                    "Withdraw publication {publication}?\nProfile: {}\nPublic key: {}\n\nA new revision with content null will be signed. Older copies are not erased.",
                     p.name, p.public_key
                 );
                 let cmd = UiCommand::Withdraw(*profile, publication.clone());
@@ -219,36 +251,66 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
     }
     None
 }
+pub fn handle_paste(state: &mut AppState, text: &str) {
+    if state.help || state.busy || state.editor_leave.is_some() {
+        return;
+    }
+    if state.screen == Screen::Editor {
+        if let Some(editor) = &mut state.editor
+            && let Err(error) = editor.paste(text)
+        {
+            state.status = error.to_string();
+        }
+    } else if let Some(form) = &mut state.form {
+        form.type_text(text.trim_end_matches(['\r', '\n']));
+    }
+}
 fn handle_editor_key(state: &mut AppState, key: KeyEvent) -> Option<UiEffect> {
-    if let Some(leave)=state.editor_leave {
+    if let Some(leave) = state.editor_leave {
         match key.code {
-            KeyCode::Char('y'|'Y') => {
-                state.editor=None;state.editor_leave=None;
-                if matches!(leave,EditorLeave::Quit) {state.running=false;return Some(UiEffect::Exit);}
+            KeyCode::Char('y' | 'Y') => {
+                state.editor = None;
+                state.editor_leave = None;
+                if matches!(leave, EditorLeave::Quit) {
+                    state.running = false;
+                    return Some(UiEffect::Exit);
+                }
                 state.reduce(Action::Back);
             }
-            KeyCode::Char('n'|'N') | KeyCode::Esc => state.editor_leave=None,
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => state.editor_leave = None,
             _ => {}
         }
         return None;
     }
-    if state.busy { return None; }
-    let quit=key.modifiers.contains(KeyModifiers::CONTROL) && key.code==KeyCode::Char('c');
-    if key.code==KeyCode::Esc || quit {
-        if state.editor.as_ref().is_some_and(|e|e.dirty) {
-            state.editor_leave=Some(if quit {EditorLeave::Quit} else {EditorLeave::Back});
+    if state.busy {
+        return None;
+    }
+    let quit = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+    if key.code == KeyCode::Esc || quit {
+        if state.editor.as_ref().is_some_and(|e| e.dirty) {
+            state.editor_leave = Some(if quit {
+                EditorLeave::Quit
+            } else {
+                EditorLeave::Back
+            });
             return None;
         }
-        state.editor=None;
-        if quit {state.running=false;return Some(UiEffect::Exit);}
-        state.reduce(Action::Back); return None;
+        state.editor = None;
+        if quit {
+            state.running = false;
+            return Some(UiEffect::Exit);
+        }
+        state.reduce(Action::Back);
+        return None;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code==KeyCode::Char('s') {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
         match state.editor.as_ref()?.draft_for_save() {
             Ok(draft) => return Some(UiEffect::Command(UiCommand::SaveDraft(Box::new(draft)))),
-            Err(error) => state.status=error.to_string(),
+            Err(error) => state.status = error.to_string(),
         }
-    } else if let Some(editor)=&mut state.editor { editor.input(key); }
+    } else if let Some(editor) = &mut state.editor {
+        editor.input(key);
+    }
     None
 }
 fn spawn(
@@ -298,13 +360,7 @@ pub async fn run(app: ClientService) -> Result<(), ClientError> {
                 let effect=match next?{
                     Event::Key(key) if key.kind!=KeyEventKind::Release=>handle_key(&mut state,key),
                     Event::Paste(text)=>{
-                        if !state.busy {
-                            if state.screen==Screen::Editor && state.editor_leave.is_none() {
-                                if let Some(editor)=&mut state.editor {
-                                    if let Err(error)=editor.paste(&text) { state.status=error.to_string(); }
-                                }
-                            } else if let Some(form)=&mut state.form {form.type_text(text.trim_end_matches(['\r','\n']));}
-                        }
+                        handle_paste(&mut state,&text);
                         None
                     }
                     _=>None,
@@ -314,16 +370,16 @@ pub async fn run(app: ClientService) -> Result<(), ClientError> {
                     UiEffect::Exit=>break,
                     UiEffect::Cancel(action)=>{
                         if let Some(action)=action{app.cancel_vault_action(action);state.vault.unlocked=false;}
-                        state.status="Tela cancelada. Envios já iniciados não podem ser desfeitos.".into();
+                        state.status="View cancelled. Already-started sends cannot be undone.".into();
                     }
-                    UiEffect::Lock=>{app.lock();state.status="Cofre bloqueado.".into();}
+                    UiEffect::Lock=>{app.lock();state.status="Vault locked.".into();}
                     UiEffect::Command(command)=>{
-                        if jobs.len()>=16{state.status="Aguarde as tarefas anteriores.".into();continue;}
+                        if jobs.len()>=16{state.status="Previous tasks are still running.".into();continue;}
                         let context=state.begin_task();let app=app.clone();
                         spawn(&mut jobs,sender.clone(),context,async move{execute_command(&app,command,context.profile).await});
                     }
                     UiEffect::Submit(request,needs_vault)=>{
-                        if jobs.len()>=16{state.status="Aguarde as tarefas anteriores; reabra o formulário.".into();state.reduce(Action::Back);continue;}
+                        if jobs.len()>=16{state.status="Wait for earlier tasks, then reopen the form.".into();state.reduce(Action::Back);continue;}
                         let action=needs_vault.then(||app.begin_vault_action());state.vault_action=action;
                         let context=state.begin_task();let app=app.clone();
                         spawn(&mut jobs,sender.clone(),context,async move{

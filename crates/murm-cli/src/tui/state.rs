@@ -155,28 +155,65 @@ impl AppState {
         let same_screen = context.navigation == self.navigation;
         match message {
             UiMessage::Editor(draft) => {
-                if !same_screen { return true; }
+                if !same_screen {
+                    return true;
+                }
                 match super::DraftEditor::new(*draft) {
-                    Ok(editor) => { self.editor=Some(editor); self.reduce(Action::Navigate(Screen::Editor)); }
-                    Err(error) => self.status=error.to_string(),
+                    Ok(editor) => {
+                        self.editor = Some(editor);
+                        self.reduce(Action::Navigate(Screen::Editor));
+                    }
+                    Err(error) => self.status = error.to_string(),
                 }
             }
             UiMessage::DraftSaved(draft) => {
-                if let Some(editor)=&mut self.editor {
-                    if editor.draft.id==draft.id { editor.saved(*draft); }
+                let summary = crate::DraftSummary {
+                    id: draft.id,
+                    profile_id: draft.profile_id,
+                    publication: draft.publication.clone(),
+                    title: draft
+                        .header
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .into(),
+                    revision: draft.header.get("revision").and_then(|v| v.as_u64()),
+                    status: draft
+                        .header
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .into(),
+                    version: draft.version,
+                    queued_event_id: draft.queued_event_id,
+                };
+                if let Some(old) = self.drafts.iter_mut().find(|d| d.id == draft.id) {
+                    *old = summary;
+                } else {
+                    self.drafts.insert(0, summary);
+                    self.drafts.truncate(1000);
                 }
-                self.status="Draft saved locally. Nothing was published.".into();
+                if let Some(editor) = &mut self.editor
+                    && editor.draft.id == draft.id
+                {
+                    editor.saved(*draft);
+                }
+                self.status = "Draft saved locally. Nothing was published.".into();
             }
             UiMessage::Status(s) => self.status = s,
             UiMessage::Snapshot(s) => self.apply_snapshot(*s),
             UiMessage::Detail { title, text } => {
-                if !same_screen { return true; }
+                if !same_screen {
+                    return true;
+                }
                 self.detail_title = title;
                 self.detail = text;
                 self.reduce(Action::Navigate(Screen::Article));
             }
             UiMessage::History(events) => {
-                if !same_screen { return true; }
+                if !same_screen {
+                    return true;
+                }
                 self.history = events;
                 self.reduce(Action::Navigate(Screen::History));
             }
@@ -225,7 +262,9 @@ impl AppState {
             Action::Navigate(screen) => {
                 if self.screen != screen {
                     self.navigation = self.navigation.wrapping_add(1);
-                    if self.previous.len() >= 16 { self.previous.remove(0); }
+                    if self.previous.len() >= 16 {
+                        self.previous.remove(0);
+                    }
                     self.previous.push(self.screen);
                     self.screen = screen;
                 }

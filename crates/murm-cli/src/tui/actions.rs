@@ -130,15 +130,19 @@ pub async fn execute_command(
     use super::{UiMessage, load_snapshot};
     use crate::ClientError;
     match command {
-        UiCommand::OpenEditor(profile,id) => Ok(UiMessage::Editor(Box::new(app.load_draft(profile,id).await?))),
-        UiCommand::SaveDraft(draft) => Ok(UiMessage::DraftSaved(Box::new(app.save_draft(draft.profile_id,*draft).await?))),
+        UiCommand::OpenEditor(profile, id) => Ok(UiMessage::Editor(Box::new(
+            app.load_draft(profile, id).await?,
+        ))),
+        UiCommand::SaveDraft(draft) => Ok(UiMessage::DraftSaved(Box::new(
+            app.save_draft(draft.profile_id, *draft).await?,
+        ))),
         UiCommand::Read(id) => {
             let event = app.cached_event(id).await?.ok_or(ClientError::NotFound)?;
             let e = event.event();
             Ok(UiMessage::Detail {
-                title: format!("Evento verificado {id}"),
+                title: format!("Verified event {id}"),
                 text: format!(
-                    "Signer: {}\nPublicação: {}\nRevisão: {} · {}\n\n{}",
+                    "Signer: {}\nPublication: {}\nRevision: {} · {}\n\n{}",
                     e.signer,
                     e.header
                         .get("publication")
@@ -153,7 +157,7 @@ pub async fn execute_command(
                         .and_then(|v| v.as_str())
                         .unwrap_or(""),
                     e.content.as_str().unwrap_or(
-                        "Publicação retirada nesta revisão. O histórico permanece separado."
+                        "Publication withdrawn in this revision. History remains separate."
                     )
                 ),
             })
@@ -161,11 +165,11 @@ pub async fn execute_command(
         UiCommand::ReadDraft(profile, id) => {
             let draft = app.load_draft(profile, id).await?;
             Ok(UiMessage::Detail {
-                title: format!("Rascunho local {id}"),
+                title: format!("Local draft {id}"),
                 text: draft
                     .content
                     .as_str()
-                    .unwrap_or("Retirada (content null)")
+                    .unwrap_or("Withdrawal (content null)")
                     .into(),
             })
         }
@@ -173,7 +177,7 @@ pub async fn execute_command(
             app.article_history_summaries(signer, &publication).await?,
         )),
         UiCommand::RelayInfo(profile, url) => Ok(UiMessage::Detail {
-            title: format!("Políticas declaradas por {url}"),
+            title: format!("Policies declared by {url}"),
             text: serde_json::to_string_pretty(&app.relay_info(profile, &url).await?)
                 .map_err(|_| ClientError::InvalidInput)?,
         }),
@@ -183,27 +187,27 @@ pub async fn execute_command(
                 snapshot: Box::new(load_snapshot(app, scope).await?),
                 screen: Screen::Articles,
                 status: format!(
-                    "Sync: {} novos no cache; {} rejeitados. {}",
+                    "Sync: {} added to cache; {} rejected. {}",
                     summary.accepted,
                     summary.rejected,
                     if summary.has_more {
-                        "Há mais páginas; sincronize novamente."
+                        "More pages are available; sync again."
                     } else {
-                        "Histórico retido consultado neste relay."
+                        "Retained history checked at this relay."
                     }
                 ),
             })
         }
-        UiCommand::Edit(profile, publication) => {
-            Ok(UiMessage::Editor(Box::new(app.edit_publication(profile, &publication).await?)))
-        }
+        UiCommand::Edit(profile, publication) => Ok(UiMessage::Editor(Box::new(
+            app.edit_publication(profile, &publication).await?,
+        ))),
         UiCommand::Publish(profile, draft) => {
             let id = app.publish(profile, draft).await?;
             app.retry_event(profile, id).await?;
             Ok(UiMessage::FormDone {
                 snapshot: Box::new(load_snapshot(app, scope).await?),
                 screen: Screen::Outbox,
-                status: format!("Evento {id}. A fila informa apenas armazenamento em cada relay."),
+                status: format!("Event {id}. Outbox status means storage at each relay only."),
             })
         }
         UiCommand::Withdraw(profile, publication) => {
@@ -212,7 +216,7 @@ pub async fn execute_command(
             Ok(UiMessage::FormDone {
                 snapshot: Box::new(load_snapshot(app, scope).await?),
                 screen: Screen::Outbox,
-                status: format!("Retirada {id} enfileirada. Não apaga cópias remotas."),
+                status: format!("Withdrawal {id} queued. Remote copies are not erased."),
             })
         }
         UiCommand::SelectProfile(profile) => {
@@ -235,8 +239,9 @@ pub async fn execute_command(
             Ok(UiMessage::FormDone {
                 snapshot: Box::new(load_snapshot(app, None).await?),
                 screen: Screen::Profiles,
-                status: "Perfil removido apenas deste banco local. Nada foi apagado dos relays."
-                    .into(),
+                status:
+                    "Profile removed from this local database only. Nothing was erased from relays."
+                        .into(),
             })
         }
         UiCommand::RemoveRelay(profile, url) => {

@@ -1,197 +1,201 @@
-# Plano 03 — Cliente, perfis, cofre e SQLite local
+# Plan 03 — Client, Profiles, Vault, and Local SQLite
 
-> Execução futura: usar superpowers:executing-plans ou superpowers:subagent-driven-development, tarefa por tarefa.
+> Historical implementation plan. The original execution guidance was to use
+> superpowers:executing-plans or superpowers:subagent-driven-development, one task at a time.
 
-**Objetivo:** tornar murm-cli um cliente persistente com perfis criados/importados,
-comandos e serviços reutilizáveis pela TUI.
-**Arquitetura:** adicionar lib.rs na crate existente; perfis, cofre, armazenamento,
-outbox e transporte são serviços sem dependência de widgets.
-**Stack proposta:** Rusqlite bundled, Tokio, Reqwest, Clap, diretórios da plataforma,
-Argon2id, XChaCha20-Poly1305, zeroize, RNG do sistema e trava de processo.
-**Spec:** [desenho](../design.md), [protocolo](01-protocol.md) e [relay](02-relay.md).
+**Goal:** Make murm-cli a persistent client with generated and imported profiles,
+commands, and services reusable by the TUI.
+**Architecture:** Add lib.rs to the existing crate. Profiles, the vault, storage,
+the outbox, and transport are services with no widget dependencies.
+**Proposed stack:** Rusqlite with bundled SQLite, Tokio, Reqwest, Clap, platform
+data directories, Argon2id, XChaCha20-Poly1305, zeroize, the system RNG, and a process lock.
+**Spec:** [Design](../design.md), [protocol](01-protocol.md), and [relay](02-relay.md).
 
-## Restrições globais
+## Global constraints
 
-Não mudar identidade do protocolo: perfil é cadastro LOCAL de uma chave pública.
-SQLite do cliente é separado do SQLite do relay. Seeds entram apenas cifradas.
-Não implementar DMs, backup padronizado ou rotação/delegação de identidade.
-Publicações usam Pandoc Markdown como fonte. Nenhum segredo é enviado ao relay.
-Conservar AGPL-3.0-only e crates existentes; não criar uma quarta crate cliente.
+Do not change protocol identity. A profile is a local record of a public key.
+The client and relay use separate SQLite files. Store seeds only as ciphertext.
+Do not implement DMs, standardized backup, or identity rotation or delegation.
+Publications use Pandoc Markdown source. No secret goes to the relay.
+Keep AGPL-3.0-only and the existing crates; do not create a fourth client crate.
 
-## Foco da revisão
+## Review focus
 
-1. Pública importada não corresponde à privada, ou pública duplicada cria outro perfil.
-2. Senha/seed aparece em SQLite, WAL, argumentos, logs ou erro.
-3. Cofre errado/corrompido sobrescreve dados e perde acesso aos perfis.
-4. Erro de rede após POST cria outra assinatura/revisão no retry.
-5. Batch ou troca de perfil avança cursor/aplica resposta no contexto errado.
+1. An imported public key mismatches the private key, or a duplicate public key creates another profile.
+2. A password or seed appears in SQLite, WAL, arguments, logs, or an error.
+3. An incorrect or corrupt vault overwrites data and loses access to profiles.
+4. A network error after POST creates a new signature or revision on retry.
+5. A batch or profile switch advances a cursor or applies a response in the wrong context.
 
-## Arquivos e interfaces
+## Files and interfaces
 
-Criar src/lib.rs, app.rs, error.rs, profiles.rs, vault.rs, transport.rs,
-articles.rs, sync.rs, outbox.rs, commands.rs, storage/mod.rs,
-storage/migrations.rs. main.rs permanece entrada do binário.
+Create src/lib.rs, app.rs, error.rs, profiles.rs, vault.rs, transport.rs,
+articles.rs, sync.rs, outbox.rs, commands.rs, storage/mod.rs, and
+storage/migrations.rs. main.rs remains the binary entry point.
 
-Tipos do cliente:
-- ProfileId: UUID local, sem significado no protocolo.
-- ProfileMode: ReadOnly ou Signing; ProfileSummary contém id, nome e SignerKey,
-  modo, estado bloqueado e relays (nunca seed).
-- ProfileInput: Generate, ImportSecret(seed, public_key opcional), ImportPublic.
-  Material secreto é wrapper zeroizante sem Debug/Serialize.
-- DraftId e Draft: autor/ProfileId, publication, revisão, source, metadados,
-  versão local para concorrência e evento enfileirado opcional.
-- ClientError: VaultNotInitialized, Locked, ReadOnly, InvalidKey, KeyMismatch, WrongPassword,
-  CorruptVault, NotFound, Conflict, Protocol, Network, Database.
-- VaultActionId: token ligado à geração do cofre, sem segredos.
-  VaultStatus informa apenas se o cofre existe e está desbloqueado.
-- ClientService: dono dos serviços, com handle do worker de banco e do cofre.
-  Operações públicas assíncronas:
-  list_profiles() -> Result<Vec<ProfileSummary>, ClientError>;
-  create_profile(name, ProfileInput) -> Result<ProfileSummary, ClientError>;
-  select_profile(ProfileId) -> Result<(), ClientError>;
-  begin_vault_action() -> VaultActionId;
-  initialize_vault(password: SecretString, action: VaultActionId) -> Result<VaultStatus, ClientError>;
-  unlock(password: SecretString, action: VaultActionId) -> Result<VaultStatus, ClientError>;
-  change_password(current: SecretString, new: SecretString, action: VaultActionId) -> Result<(), ClientError>;
-  cancel_vault_action(VaultActionId); lock();
-  save_draft(ProfileId, Draft) -> Result<DraftId, ClientError>;
-  publish(ProfileId, DraftId) -> Result<EventId, ClientError>;
-  sync_profile(ProfileId, RelayUrl) -> Result<SyncSummary, ClientError>.
-- RelayTransport implementa info, submit, fetch, query e sync com tipos do plano 01.
-  Recebe URL e limites de rede; nunca perfil privado ou senha.
-- Serviço emite ClientEvent com IDs de tarefa, ProfileId e geração de UI.
-  As telas não recebem acesso a ClientStore ou ao VaultKey.
+Client types:
 
-### Task 1: Banco local e perfis somente leitura
+- ProfileId: local UUID with no protocol meaning.
+- ProfileMode: ReadOnly or Signing. ProfileSummary contains the ID, name, SignerKey,
+  mode, locked state, and relays, but never a seed.
+- ProfileInput: Generate, ImportSecret(seed, optional public_key), ImportPublic.
+  Secret material is a zeroizing wrapper without Debug or Serialize.
+- DraftId and Draft: author/ProfileId, publication, revision, source, metadata,
+  a local concurrency version, and an optional queued event.
+- ClientError: VaultNotInitialized, Locked, ReadOnly, InvalidKey, KeyMismatch,
+  WrongPassword, CorruptVault, NotFound, Conflict, Protocol, Network, Database.
+- VaultActionId: a token tied to the vault generation, with no secrets.
+  VaultStatus reports only whether the vault exists and is unlocked.
+- ClientService: owns the services and holds database-worker and vault handles.
+  Public async operations:
+  - `list_profiles() -> Result<Vec<ProfileSummary>, ClientError>`;
+  - `create_profile(name, ProfileInput) -> Result<ProfileSummary, ClientError>`;
+  - `select_profile(ProfileId) -> Result<(), ClientError>`;
+  - `begin_vault_action() -> VaultActionId`;
+  - `initialize_vault(password: SecretString, action: VaultActionId) -> Result<VaultStatus, ClientError>`;
+  - `unlock(password: SecretString, action: VaultActionId) -> Result<VaultStatus, ClientError>`;
+  - `change_password(current: SecretString, new: SecretString, action: VaultActionId) -> Result<(), ClientError>`;
+  - `cancel_vault_action(VaultActionId)`; `lock()`;
+  - `save_draft(ProfileId, Draft) -> Result<DraftId, ClientError>`;
+  - `publish(ProfileId, DraftId) -> Result<EventId, ClientError>`;
+  - `sync_profile(ProfileId, RelayUrl) -> Result<SyncSummary, ClientError>`.
+- RelayTransport implements info, submit, fetch, query, and sync using Plan 01
+  types. It receives the URL and network limits, never a private profile or password.
+- The service emits ClientEvent with task IDs, ProfileId, and UI generation.
+  Views have no access to ClientStore or VaultKey.
 
-**Arquivos:** storage/*, profiles.rs, error.rs, tests/profiles.rs.
+### Task 1: Local database and read-only profiles
 
-- [ ] Testar create_read_only_and_restart, public_key_unique,
-  rename_keeps_identity, independent_client_databases,
-  migration_failure_preserves_database e second_instance_is_refused.
-- [ ] Rodar cargo test -p murm-cli --test profiles; esperar falhas.
-- [ ] Criar tabelas client_meta, profiles, vault, profile_secrets,
+**Files:** storage/*, profiles.rs, error.rs, tests/profiles.rs.
+
+- [ ] Test create_read_only_and_restart, public_key_unique, rename_keeps_identity,
+  independent_client_databases, migration_failure_preserves_database, and
+  second_instance_is_refused.
+- [ ] Run cargo test -p murm-cli --test profiles; expect failures.
+- [ ] Create tables client_meta, profiles, vault, profile_secrets,
   profile_relays, drafts, verified_events, publication_heads, sync_cursors,
-  outbox e outbox_destinations.
-  profiles.public_key é UNIQUE; secret só existe para Signing.
-  Eventos públicos podem ser compartilhados no cache, mas rascunhos, cursor
-  de acompanhamento, preferências e fila possuem contexto explícito de perfil.
-- [ ] Aplicar migrações/WAL/foreign keys e worker dedicado do desenho.
-  Resolução de data-dir é única para CLI e TUI; --data-dir sobrescreve o padrão.
-  Trava de processo cobre operações de escrita, com erro claro em segunda instância.
-- [ ] Rodar testes e commit feat(client): persist local profiles.
+  outbox, and outbox_destinations. profiles.public_key is UNIQUE; secrets
+  exist only for Signing. Profiles can share public events in the cache, but
+  drafts, follow cursors, preferences, and outbox items have explicit profile scope.
+- [ ] Apply the design's migrations, WAL, foreign keys, and dedicated worker.
+  The CLI and TUI resolve the data directory in the same way; --data-dir
+  overrides the default. The process lock covers writes, with a clear error
+  for a second instance.
+- [ ] Run the tests and commit: feat(client): persist local profiles.
 
-### Task 2: Cofre e importação de identidade
+### Task 2: Vault and identity import
 
-**Arquivos:** vault.rs, profiles.rs, tests/vault.rs.
-**Consome:** derive_public_key, SignerKey e formato de seed do plano 01.
+**Files:** vault.rs, profiles.rs, tests/vault.rs.
+**Uses:** derive_public_key, SignerKey, and the Plan 01 seed format.
 
-- [ ] Testar generated_profile_can_sign_after_restart, import_secret_derives_public,
+- [ ] Test generated_profile_can_sign_after_restart, import_secret_derives_public,
   mismatched_pair_rolls_back, upgrade_read_only_preserves_state,
   duplicate_import_is_idempotent, wrong_password_does_not_mutate,
-  ciphertext_tampering_fails, changing_password_is_atomic e lock_blocks_signing.
-- [ ] Rodar cargo test -p murm-cli --test vault; esperar falhas.
-- [ ] Implementar o cofre exatamente como no desenho: master key 32 bytes,
-  Argon2id com 65536 KiB/3/1, salt 16 bytes e XChaCha20-Poly1305 com nonce 24.
-  Dados associados identificam versão/contexto/pública; copiar ciphertext para
-  outro perfil não pode produzir uma seed aceita.
-- [ ] Exigir uma transação para criar/promover perfil e salvar a seed cifrada.
-  Validar/derivar a pública antes de gravar; promoção requer desbloqueio.
-  O worker do cofre entrega assinaturas, não seeds aos widgets/transportes.
-- [ ] Conferir parâmetros do cofre antes do KDF. Limpar buffers transitórios
-  de senha/seed, não derivar Debug para segredos. Não alegar apagamento físico
-  garantido de memória, WAL antigo ou backups. Rascunhos públicos não são cifrados.
-- [ ] Adicionar plaintext_seed_absent_from_db_and_wal usando seed de teste
-  conhecida e varredura dos bytes do arquivo e WAL; adicionar
-  secret_not_in_error_or_debug e malformed_vault_parameters_rejected.
-- [ ] Acrescentar cancel_during_kdf_never_unlocks_later e
-  cancel_after_initialization_commit_leaves_locked_vault. O serviço coordena
-  geração/token e instalação do segredo sob exclusão mútua; KDF fica fora dela.
-  lock/cancel invalidam a tentativa e removem um segredo instalado por ela.
-  create_profile de Signing exige cofre desbloqueado; sem cofre retorna
-  VaultNotInitialized, novo caso explícito de ClientError.
-  A aplicação consulta VaultStatus e chama initialize_vault antes de criar.
-- [ ] Rodar testes e commit feat(client): encrypt signing profiles locally.
+  ciphertext_tampering_fails, changing_password_is_atomic, and lock_blocks_signing.
+- [ ] Run cargo test -p murm-cli --test vault; expect failures.
+- [ ] Implement the vault as designed: 32-byte master key, Argon2id with
+  65536 KiB/3/1, a 16-byte salt, and XChaCha20-Poly1305 with a 24-byte nonce.
+  Associated data identifies the version, context, and public key. Copying
+  ciphertext to another profile must not yield an accepted seed.
+- [ ] Create or upgrade the profile and store the encrypted seed in one transaction.
+  Validate or derive the public key before writing. Upgrading requires an
+  unlocked vault. The vault worker gives widgets and transport signatures, not seeds.
+- [ ] Check vault parameters before running the KDF. Clear transient password and
+  seed buffers. Do not derive Debug for secret types. Do not claim guaranteed
+  physical erasure from memory, old WAL, or backups. Drafts are not encrypted.
+- [ ] Add plaintext_seed_absent_from_db_and_wal using a known test seed and a
+  scan of the database and WAL bytes. Add secret_not_in_error_or_debug and
+  malformed_vault_parameters_rejected.
+- [ ] Add cancel_during_kdf_never_unlocks_later and
+  cancel_after_initialization_commit_leaves_locked_vault. The service coordinates
+  the generation and token with secret installation under mutual exclusion.
+  The KDF runs outside the lock. Lock or cancel invalidates an attempt and
+  removes any secret it installed. Creating a Signing profile requires an
+  unlocked vault; if no vault exists, return VaultNotInitialized, an explicit
+  ClientError variant. The app checks VaultStatus and calls initialize_vault first.
+- [ ] Run the tests and commit: feat(client): encrypt signing profiles locally.
 
-### Task 3: Transporte, cache e sincronização
+### Task 3: Transport, cache, and sync
 
-**Arquivos:** transport.rs, sync.rs, tests/client_sync.rs.
-**Consome:** APIs comuns, ClientStore e relay do plano 02.
+**Files:** transport.rs, sync.rs, tests/client_sync.rs.
+**Uses:** Shared APIs, ClientStore, and the Plan 02 relay.
 
-- [ ] Testar verify_before_cache, sync_cursor_commits_with_events,
-  invalid_batch_leaves_cursor_unchanged, replay_deduplicates,
-  late_event_is_visible, expired_cursor_rescans, retry_after_respected,
-  http_alias_fallback_only_for_method_failure e network_timeout_is_bounded.
-- [ ] Rodar cargo test -p murm-cli --test client_sync; esperar falhas.
-- [ ] Configurar URLs por perfil com HTTP loopback/HTTPS, sem credenciais na URL.
-  Limitar conexão a 5 s e operação a 20 s por padrão, configuráveis. Não seguir
-  redirects automaticamente. Obter /info e validar os anúncios sem tratá-los
-  como prova de honestidade. Negociar QUERY e fallback segundo a MIP-03.
-- [ ] Validar cada evento com a biblioteca antes de armazenar; aplicar preferência
-  local. Eventos aceitos, heads e marcador final ficam na mesma transação.
-  O decoder mantém os bytes dos eventos ou usa o visitor estrito compartilhado
-  antes de criar Value; não pode descartar campos repetidos da resposta e só
-  depois verificar um evento já modificado.
-  Falhas semânticas de kind anunciado como validado obedecem a regra de batch
-  inválido; persistência falha não pode avançar cursor.
-- [ ] Para cursor expirado, reiniciar histórico retido e deduplicar por ID.
-  Usar filtros estáveis sem excluir retiradas. Cada assinatura, peer, filtro
-  e perfil tem contexto explícito; não reutilizar marcador entre assinaturas
-  diferentes de filtros.
-- [ ] Rodar testes e commit feat(client): add verified relay synchronization.
+- [ ] Test verify_before_cache, sync_cursor_commits_with_events,
+  invalid_batch_leaves_cursor_unchanged, replay_deduplicates, late_event_is_visible,
+  expired_cursor_rescans, retry_after_respected,
+  http_alias_fallback_only_for_method_failure, and network_timeout_is_bounded.
+- [ ] Run cargo test -p murm-cli --test client_sync; expect failures.
+- [ ] Configure URLs per profile, allowing HTTP on loopback or HTTPS, without
+  credentials in the URL. Default to configurable limits of 5 seconds to connect
+  and 20 seconds per operation. Do not follow redirects automatically. Fetch
+  /info and validate its claims without treating them as proof of honesty.
+  Negotiate QUERY and its fallback according to MIP-03.
+- [ ] Validate each event with the library before storage and apply local
+  revision preference. Commit accepted events, heads, and the final cursor in
+  the same transaction. The decoder preserves event bytes or uses the shared
+  strict visitor before constructing a Value. It must not drop duplicate response
+  fields and then verify a changed event. Semantic failures for a kind advertised
+  as validated follow the invalid-batch rule. Storage failure cannot advance the cursor.
+- [ ] On cursor expiry, restart from retained history and deduplicate by ID.
+  Use stable filters that do not exclude withdrawals. Each subscription, peer,
+  filter, and profile has explicit scope. Do not reuse a cursor across different
+  filter signatures.
+- [ ] Run the tests and commit: feat(client): add verified relay synchronization.
 
-### Task 4: Artigos e fila de envio
+### Task 4: Articles and outbox
 
-**Arquivos:** articles.rs, outbox.rs, tests/publishing.rs.
-**Produz:** rascunhos e operações de publicação consumidas pela TUI.
+**Files:** articles.rs, outbox.rs, tests/publishing.rs.
+**Provides:** Drafts and publication operations for the TUI.
 
-- [ ] Testar read_only_cannot_publish, locked_cannot_sign,
-  draft_survives_restart, publish_uses_selected_profile,
-  duplicate_publish_reuses_queued_event, timeout_retries_same_id,
-  editing_uses_max_known_revision, withdraw_and_restore,
-  stale_revision_conflict_is_visible e switching_profile_keeps_outbox_owner.
-- [ ] Rodar cargo test -p murm-cli --test publishing; esperar falhas.
-- [ ] Criar publication estável aleatória no primeiro rascunho; nome/título
-  não é sua identidade. Edição usa maior revisão conhecida + 1, sem overflow.
-  Nunca afirmar que ela é globalmente a maior. Retirada é evento com content null.
-- [ ] Confirmar o conteúdo e ProfileId antes de assinar. Persistir o evento
-  assinado e destinos antes da rede; a outbox guarda os mesmos bytes/ID nas
-  tentativas. Pressionar publicar novamente no mesmo snapshot já enfileirado
-  devolve o mesmo ID, não cria outra revisão por mudar o relógio.
-- [ ] Guardar resultado por destino: pending, stored com retain_until,
-  refused ou retry_at. Não descrever stored como entregue/lido/replicado.
-  Um sucesso de rede seguido de falha local é repetido com o mesmo evento.
-- [ ] Cliente que já sabe de retirada não apresenta revisão antiga como atual,
-  mesmo se outro relay a retornar. Cache histórico e visão atual são separados.
-- [ ] Rodar testes e commit feat(client): publish revision events from durable outbox.
+- [ ] Test read_only_cannot_publish, locked_cannot_sign, draft_survives_restart,
+  publish_uses_selected_profile, duplicate_publish_reuses_queued_event,
+  timeout_retries_same_id, editing_uses_max_known_revision, withdraw_and_restore,
+  stale_revision_conflict_is_visible, and switching_profile_keeps_outbox_owner.
+- [ ] Run cargo test -p murm-cli --test publishing; expect failures.
+- [ ] Generate a random, stable publication identifier for the first draft.
+  A name or title is not its identity. Editing uses the highest known revision
+  plus one, without overflow. Never claim it is globally the highest. A
+  withdrawal is an event with null content.
+- [ ] Confirm the content and ProfileId before signing. Persist the signed event
+  and destinations before contacting the network. The outbox keeps the same
+  bytes and ID on retry. Publishing the same queued snapshot again returns the
+  same ID; it does not create a revision merely because the clock changed.
+- [ ] Store each destination's result: pending, stored with retain_until,
+  refused, or retry_at. Do not describe stored as delivered, read, or replicated.
+  If the network succeeds and local storage fails, retry with the same event.
+  Client retries are user-triggered and subject to backoff.
+- [ ] A client that knows about a withdrawal does not show an older revision as
+  current, even if another relay returns it. Historical cache and current view are separate.
+- [ ] Run the tests and commit: feat(client): publish revision events from durable outbox.
 
-### Task 5: Comandos e API utilizada pela TUI
+### Task 5: Commands and TUI service API
 
-**Arquivos:** app.rs, commands.rs, main.rs, tests/commands.rs.
-**Consome:** todos os serviços anteriores.
+**Files:** app.rs, commands.rs, main.rs, tests/commands.rs.
+**Uses:** All the preceding services.
 
-- [ ] Testar profile_commands_match_service, public_import_never_unlocks,
-  secret_input_not_in_argv, cli_uses_same_database_as_tui e headless_never_hangs.
-- [ ] Rodar cargo test -p murm-cli --test commands; esperar falhas.
-- [ ] Implementar comandos profile create/import/list/use/rename/remove,
-  vault init/passwd, relay add/list/remove, article draft/edit/publish/history/withdraw/restore,
-  fetch, query, sync e outbox retry.
-  --public-key permite pública por argumento; privada só por --secret-file,
-  --secret-stdin ou formulário oculto, com chave derivada/conferida.
-- [ ] Senha vem de prompt oculto num terminal ou --password-file para automação,
-  nunca --password valor nem variável de ambiente. Quando stdin contém a seed,
-  o prompt de senha usa o terminal de controle; sem terminal exigir password-file
-  ou dar erro imediatamente. Não ler dois segredos ambiguamente do mesmo stream.
-- [ ] Exportar ClientService/ClientEvent/DTOs sem VaultKey. Publicação e mudanças
-  locais passam pelos mesmos serviços, independentemente de comando ou TUI.
-  Remover perfil requer confirmação explícita ou --yes; não muda dados remotos
-  e não promete destruir cópias já existentes da chave.
-- [ ] Rodar testes e commit feat(client): expose profile and article commands.
+- [ ] Test profile_commands_match_service, public_import_never_unlocks,
+  secret_input_not_in_argv, cli_uses_same_database_as_tui, and headless_never_hangs.
+- [ ] Run cargo test -p murm-cli --test commands; expect failures.
+- [ ] Implement profile create/import/list/use/rename/remove, vault init/passwd,
+  relay add/list/remove, article draft/edit/publish/history/withdraw/restore,
+  fetch, query, sync, and outbox retry. --public-key accepts a public key as an
+  argument. Supply a private key only via --secret-file, --secret-stdin, or a
+  masked form. Derive and check the public key.
+- [ ] Read the password from a masked terminal prompt or --password-file for
+  automation, never a --password value or an environment variable. If stdin
+  contains the seed, prompt for the password on the controlling terminal. With
+  no terminal, require a password file or fail immediately. Do not read two
+  secrets ambiguously from the same stream.
+- [ ] Export ClientService, ClientEvent, and DTOs without VaultKey. Both the
+  commands and TUI use the same services for publication and local changes.
+  Removing a profile requires explicit confirmation or --yes, changes no
+  remote data, and does not promise to destroy existing copies of the key.
+- [ ] Run the tests and commit: feat(client): expose profile and article commands.
 
-## Saída deste plano
+## Exit criteria
 
-cargo test -p murm-cli --lib e testes profiles/vault/client_sync/publishing/commands.
-Conferir cargo tree -p murm-cli: não há dependência de murm-relay.
-Perfis e rascunhos sobrevivem a restart; senha não é cadastro no protocolo.
-Ainda não implementar telas neste plano. A execução sem subcomando será ligada
-à TUI no plano 04; até lá pode mostrar ajuda.
+Run cargo test -p murm-cli --lib and the profiles, vault, client_sync,
+publishing, and commands tests. Check cargo tree -p murm-cli for the absence
+of a murm-relay dependency. Profiles and drafts survive a restart, and the
+password does not create a protocol account. This plan covers services and
+commands; Plan 04 covers screens and opening the TUI without a subcommand.
