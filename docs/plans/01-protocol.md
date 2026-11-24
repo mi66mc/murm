@@ -1,145 +1,148 @@
-# Plano 01 — Biblioteca compartilhada do protocolo
+# Plan 01 — Shared Protocol Library
 
-> Execução futura: usar superpowers:executing-plans ou superpowers:subagent-driven-development, tarefa por tarefa. Este arquivo não inicia implementação.
+> Historical implementation plan. The original execution guidance was to use
+> superpowers:executing-plans or superpowers:subagent-driven-development, one task at a time.
 
-**Objetivo:** implementar as regras determinísticas compartilhadas por relay e cliente.
-**Arquitetura:** crate murm-protocol independente de rede, SQLite, cofre e terminal.
-**Stack proposta:** Serde, serde_json, serde_jcs, SHA-256, ed25519-dalek,
-curve25519-dalek para validação de pontos e tipos zeroizantes quando necessário.
-**Spec:** [desenho](../design.md) e MIPs 01–05 no
-[commit de referência](https://github.com/mi66mc/mips/tree/c3d601848cd05c41b3726a9dc2631239656da8e7).
+**Goal:** Implement the deterministic rules shared by the relay and client.
+**Architecture:** The murm-protocol crate is independent of networking, SQLite, the vault, and the terminal.
+**Proposed stack:** Serde, serde_json, serde_jcs, SHA-256, ed25519-dalek,
+curve25519-dalek for point validation, and zeroizing types where needed.
+**Spec:** [Design](../design.md) and MIPs 01–05 at the
+[reference commit](https://github.com/mi66mc/mips/tree/c3d601848cd05c41b3726a9dc2631239656da8e7).
 
-## Restrições globais
+## Global constraints
 
-Rust edition 2024; licença AGPL-3.0-only; três crates existentes.
-Evento com exatamente oito campos; hash de objeto JCS de seis campos; Ed25519
-puro sobre 32 bytes do hash. Inteiros seguros até 9007199254740991.
-Não adicionar campos de conta, perfil local, senha, dispositivo ou backup.
-Os valores locais do relay não alteram validade criptográfica.
+Rust edition 2024, AGPL-3.0-only, and the three existing crates.
+An event has exactly eight fields; hash the six-field JCS object and apply
+pure Ed25519 to the 32-byte digest. Safe integers extend up to 9007199254740991.
+Do not add fields for accounts, local profiles, passwords, devices, or backup.
+Local relay settings do not change cryptographic validity.
 
-Dependências propostas serão resolvidas em versões estáveis compatíveis com
-o toolchain e fixadas no Cargo.lock ao executar este plano, sem instalar agora.
+Use stable dependency versions compatible with the toolchain. The resolved
+versions are pinned in Cargo.lock.
 
-## Foco da revisão
+## Review focus
 
-1. Propriedades JSON repetidas, inclusive em objetos desconhecidos.
-2. Ordenação UTF-16/JCS, números, zero negativo e Unicode sem normalização.
-3. Assinar texto hexadecimal em vez do digest.
-4. Divergência entre política de pontos Ed25519 das MIPs e defaults da biblioteca.
-5. Recriar artigo retirado ao filtrar revisões antes de selecionar a preferida.
+1. Duplicate JSON properties, including in unknown objects.
+2. UTF-16/JCS ordering, numbers, negative zero, and Unicode without normalization.
+3. Accidentally signing hexadecimal text instead of the digest.
+4. Differences between the MIPs' Ed25519 point rules and library defaults.
+5. Resurfacing a withdrawn article by filtering revisions before selecting the preferred one.
 
-## Arquivos e contratos
+## Files and contracts
 
-Criar em crates/murm-protocol/src:
-event.rs, json.rs, crypto.rs, publication.rs, filter.rs, api.rs, error.rs.
-Modificar lib.rs e Cargo.toml; dependências comuns em Cargo.toml da raiz.
+Create the following in crates/murm-protocol/src:
+event.rs, json.rs, crypto.rs, publication.rs, filter.rs, api.rs, and error.rs.
+Modify lib.rs and Cargo.toml; declare shared dependencies in the root Cargo.toml.
 
-Tipos públicos e funções têm os nomes do desenho. EventId e SignerKey são
-wrappers de 32 bytes com codificação hex minúscula no JSON. SignatureBytes
-contém 64 bytes. Event guarda os oito campos; header/content preservam JsonValue.
-UnsignedEvent tem somente os seis campos assináveis. VerifiedEvent encapsula
-Event após validação básica e criptográfica; não permite construção pública
-com campos arbitrários. PublicationMeta contém chave lógica, revisão, ID e status.
+Public types and functions use the names from the design. EventId and SignerKey
+are 32-byte wrappers encoded as lowercase hex in JSON. SignatureBytes contains
+64 bytes. Event holds all eight fields; header and content preserve JsonValue.
+UnsignedEvent contains only the six signable fields. VerifiedEvent wraps Event
+after structural and cryptographic validation; arbitrary public construction is
+not allowed. PublicationMeta holds the logical key, revision, ID, and status.
 
-ParseLimits recebe max_bytes e max_depth do chamador. ProtocolError diferencia
-JSON inválido, shape, versão, ID, assinatura, kind, filtro e limites.
-Não carregar limites de admissão de uma configuração global nessa crate.
+ParseLimits takes max_bytes and max_depth from the caller. ProtocolError
+distinguishes invalid JSON, shape, version, ID, signature, kind, filter, and limit
+errors. Do not load admission limits from global configuration in this crate.
 
-### Task 1: Parsing e representação
+### Task 1: Parsing and representation
 
-**Arquivos:** src/event.rs, src/json.rs, src/error.rs, tests/event_input.rs.
+**Files:** src/event.rs, src/json.rs, src/error.rs, tests/event_input.rs.
 
-**Produz:** parse_event(bytes: &[u8], limits: ParseLimits) -> Result<Event, ProtocolError>,
-e os tipos acima. Ainda não retorna VerifiedEvent.
+**Provides:** `parse_event(bytes: &[u8], limits: ParseLimits) -> Result<Event, ProtocolError>`
+and the types above. This does not yet return VerifiedEvent.
 
-- [ ] Escrever testes duplicate_nested_member_rejected, unknown_outer_field_rejected,
+- [ ] Write tests duplicate_nested_member_rejected, unknown_outer_field_rejected,
   missing_field_rejected, unknown_nested_field_preserved, invalid_unicode_rejected,
-  unsafe_integer_rejected, byte_and_depth_limit_rejected.
-  Rejeitar uma repetição em header e em content antes de serde_json::Value
-  descartar a ocorrência. Evento com campo externo extra é erro, não perda do campo.
-- [ ] Rodar cargo test -p murm-protocol --test event_input; esperar falha porque
-  o parser não existe.
-- [ ] Implementar parser com visitor que detecta repetição em todos os objetos
-  e valida números/Unicode antes de construir os tipos. Não usar só Value
-  desserializado por um parser que sobrescreve chaves repetidas.
-- [ ] Rodar o mesmo teste, agora com sucesso; revisar preservação de unknown fields.
+  unsafe_integer_rejected, and byte_and_depth_limit_rejected.
+  Reject duplicate members in header and content before serde_json::Value
+  can discard an occurrence. An extra top-level field is an error, not a field to drop.
+- [ ] Run cargo test -p murm-protocol --test event_input; expect failure because
+  the parser does not exist yet.
+- [ ] Implement a parser with a visitor that detects duplicate members in every
+  object and validates numbers and Unicode before constructing the types. Do not
+  rely solely on Value deserialized by a parser that overwrites duplicate keys.
+- [ ] Run the same tests and check that they pass and unknown fields are preserved.
 - [ ] Commit: feat(protocol): add strict event parsing.
 
-### Task 2: ID, assinatura e verificação
+### Task 2: ID, signing, and verification
 
-**Arquivos:** src/crypto.rs, src/lib.rs, tests/event_crypto.rs.
-**Consome:** Event, UnsignedEvent, ParseLimits, ProtocolError.
-**Produz:** canonical_unsigned(&UnsignedEvent) -> Result<Vec<u8>, ProtocolError>,
-event_id(&UnsignedEvent) -> Result<EventId, ProtocolError>, sign_event e
-parse_and_verify do desenho; derive_public_key(seed: &[u8; 32]) -> SignerKey.
+**Files:** src/crypto.rs, src/lib.rs, tests/event_crypto.rs.
+**Uses:** Event, UnsignedEvent, ParseLimits, ProtocolError.
+**Provides:** `canonical_unsigned(&UnsignedEvent) -> Result<Vec<u8>, ProtocolError>`,
+`event_id(&UnsignedEvent) -> Result<EventId, ProtocolError>`, sign_event and
+parse_and_verify from the design, and `derive_public_key(seed: &[u8; 32]) -> SignerKey`.
 
-- [ ] Testar mip02_known_event com seed/payload/assinatura publicados na MIP-02.
-  Asserção central:
-```rust
-assert_eq!(id.to_string(),
-    "945708370d265a3825922c890b2ac7f09fb0d5a68fa5e12e9b768ec0e3790791");
-```
-  Conferir também a assinatura completa e os bytes canônicos publicados.
-  Adicionar raw_digest_not_hex, each_signed_field_changes_id,
+- [ ] Test mip02_known_event with the seed, payload, and signature published in
+  MIP-02. The key assertion is:
+
+  ```rust
+  assert_eq!(id.to_string(),
+      "945708370d265a3825922c890b2ac7f09fb0d5a68fa5e12e9b768ec0e3790791");
+  ```
+
+  Also check the entire signature and the published canonical bytes.
+  Add raw_digest_not_hex, each_signed_field_changes_id,
   formatting_and_object_order_preserve_id, array_order_changes_id,
-  unicode_not_normalized e negative_zero_uses_jcs_zero.
-- [ ] Rodar cargo test -p murm-protocol --test event_crypto; observar falhas.
-- [ ] Implementar com serde_jcs e primitivas estabelecidas; o payload é objeto.
-  Conferir chaves e R com decoding canônico e torsion-free; pública não identidade;
-  S canônico e menor que L. Depois usar a equação de verificação da biblioteca.
-  Não substituir essas regras por verify_strict sem conferir diferenças:
-  a identidade de R pertence ao subgrupo mas pode ser rejeitada pelo default
-  estrito da biblioteca. O comportamento publicado da MIP é a referência.
-  Não habilitar verificação em lote com semântica diferente da individual.
-- [ ] Adicionar noncanonical_point_rejected, torsion_point_rejected,
-  identity_public_key_rejected, scalar_out_of_range_rejected e teste de R
-  identidade válido usando construção algébrica de teste independente, sem
-  escrever primitivas criptográficas de produção. Documentar qualquer conflito
-  de biblioteca como incompatibilidade a corrigir, não mudar a MIP silenciosamente.
-- [ ] Rodar cargo test -p murm-protocol --test event_crypto; todos passam.
+  unicode_not_normalized, and negative_zero_uses_jcs_zero.
+- [ ] Run cargo test -p murm-protocol --test event_crypto and observe the failures.
+- [ ] Implement with serde_jcs and established primitives. The payload is an object.
+  Check that public-key and R encodings are canonical and the points are torsion-free.
+  The public key must not be the identity. S must be canonical and less than L.
+  Then use the library's verification equation. Do not substitute verify_strict
+  without checking the differences: the identity for R belongs to the subgroup
+  but the library's strict default may reject it. The MIP is authoritative.
+  Do not enable batch verification with semantics different from individual verification.
+- [ ] Add noncanonical_point_rejected, torsion_point_rejected,
+  identity_public_key_rejected, scalar_out_of_range_rejected, and a valid identity-R
+  test using an independent algebraic test construction. Do not implement production
+  cryptographic primitives. Document any library conflict as an incompatibility
+  to fix; do not silently change the MIP.
+- [ ] Run cargo test -p murm-protocol --test event_crypto and check that all tests pass.
 - [ ] Commit: feat(protocol): implement canonical IDs and event verification.
 
-### Task 3: Publicações e preferência
+### Task 3: Publications and revision preference
 
-**Arquivos:** src/publication.rs, tests/publications.rs.
-**Consome:** VerifiedEvent e comparação binária de EventId.
-**Produz:** validate_publication e compare_revisions do desenho.
+**Files:** src/publication.rs, tests/publications.rs.
+**Uses:** VerifiedEvent and binary EventId comparison.
+**Provides:** validate_publication and compare_revisions from the design.
 
-- [ ] Testar identifier_bounds, metadata_bounds, withdrawn_requires_null,
+- [ ] Test identifier_bounds, metadata_bounds, withdrawn_requires_null,
   published_requires_string, missing_predecessor_allowed,
   greater_revision_then_greater_id, another_signer_is_another_publication,
-  unknown_metadata_preserved e maximum_revision_does_not_wrap.
-- [ ] Rodar cargo test -p murm-protocol --test publications; esperar falhas.
-- [ ] Implementar exatamente os limites da MIP-04: ID de publicação ASCII de
-  1–128 caracteres; título 200, resumo 1000, tópicos até 20 strings únicas de
-  1–64 escalares Unicode, idioma 1–64. Comparação exata. Não renderizar Pandoc.
-  compare_revisions retorna erro entre chaves lógicas diferentes.
-- [ ] Rodar o teste; conferir kind 1 e revisão positiva segura.
+  unknown_metadata_preserved, and maximum_revision_does_not_wrap.
+- [ ] Run cargo test -p murm-protocol --test publications; expect failures.
+- [ ] Implement the MIP-04 limits exactly: a 1–128 character ASCII publication ID;
+  title up to 200, summary up to 1000, up to 20 unique topic strings of 1–64 Unicode
+  scalar values each, and language of length 1–64. Use exact comparison. Do not
+  render Pandoc. compare_revisions rejects different logical keys.
+- [ ] Run the tests and check kind 1 and safe positive revision numbers.
 - [ ] Commit: feat(protocol): validate publication revisions.
 
-### Task 4: Filtros e contratos HTTP
+### Task 4: Filters and HTTP contracts
 
-**Arquivos:** src/filter.rs, src/api.rs, tests/query_contract.rs.
-**Produz:** Filter, tipos API do desenho, validate_query e validate_sync
-com RelayInfo/limites de capacidade, matches_filter e ProblemCode/Problem.
+**Files:** src/filter.rs, src/api.rs, tests/query_contract.rs.
+**Provides:** Filter, the API types from the design, validate_query and
+validate_sync with RelayInfo and capacity limits, matches_filter, ProblemCode, and Problem.
 
-- [ ] Testar and_inside_or_between, deduplicate_by_id, typed_equality,
+- [ ] Test and_inside_or_between, deduplicate_by_id, typed_equality,
   missing_vs_null, contains_is_array_membership, since_inclusive_until_exclusive,
   unknown_request_member_rejected, header_requires_explicit_kinds,
-  unsupported_path_rejected, current_requires_supported_kinds.
-  Desserializar o /info completo da MIP-03; conferir relação entre accepted,
-  validated e current kinds, políticas padrão/overrides e os códigos de erro.
-- [ ] Rodar cargo test -p murm-protocol --test query_contract; esperar falhas.
-- [ ] Implementar sem gerar SQL. O relay valida capacidade antes de filtrar;
-  matches_filter nunca consulta rede. Cursor é string opaca no contrato.
-  Manter separado o formato QueryResponse(next_cursor) do SyncResponse(cursor,
-  has_more). Respostas aceitam metadados extras; pedidos têm shape fechado.
-- [ ] Rodar o teste; conferir que assinatura válida não implica verdade editorial.
+  unsupported_path_rejected, and current_requires_supported_kinds.
+  Deserialize the complete MIP-03 /info example. Check the relationship between
+  accepted, validated, and current kinds, default policies and overrides, and error codes.
+- [ ] Run cargo test -p murm-protocol --test query_contract; expect failures.
+- [ ] Implement without generating SQL. The relay validates capacity before
+  filtering. matches_filter never uses the network. A cursor is an opaque string.
+  Keep QueryResponse(next_cursor) distinct from SyncResponse(cursor, has_more).
+  Responses accept extra metadata; requests reject unknown members.
+- [ ] Run the tests. Check that a valid signature does not imply editorial truth.
 - [ ] Commit: feat(protocol): add query and relay API contracts.
 
-## Saída deste plano
+## Exit criteria
 
-Rodar cargo fmt --all -- --check e cargo test -p murm-protocol.
-Nenhuma dependência de Axum, Rusqlite ou Ratatui entra nesta crate.
-Os testes usam exemplos inline nas suítes, sem novo diretório de schemas,
-test-vectors ou geradores. Só seguir ao armazenamento usando estes contratos.
+Run cargo fmt --all -- --check and cargo test -p murm-protocol.
+This crate does not depend on Axum, Rusqlite, or Ratatui. Tests use inline
+examples without a new schemas directory, test-vectors directory, or generators.
+Build the storage layers on these contracts.

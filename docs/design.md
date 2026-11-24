@@ -1,211 +1,225 @@
-# Murm em Rust: desenho do primeiro protótipo
+# Murm in Rust: First Prototype Design
 
-Estado: proposta para revisão. Este documento e os planos não implementam funcionalidades.
+This is the approved design for the first prototype. See the [README](../README.md) for implementation status and current limits.
 
-## Objetivo e origem das decisões
+## Goal and design decisions
 
-Construir um relay persistente e um cliente instalável com comandos e TUI,
-compartilhando a implementação do protocolo. O cliente mantém perfis, chaves,
-rascunhos e dados sincronizados em SQLite; o relay tem seu próprio SQLite.
+Build a persistent relay and an installable client with commands and a TUI,
+sharing one protocol implementation. The client stores profiles, keys, drafts,
+and synced data in SQLite; the relay has its own SQLite database.
 
-Decisões do usuário: Rust, Cargo workspace, três crates, AGPL-3.0-only,
-TUI no cliente, perfis persistentes, criação e importação de chaves.
-Identidade de protocolo continua sendo somente a chave pública; perfil local
-não é conta no relay nem um evento de perfil com kind ainda não definido.
+The user chose Rust, a Cargo workspace, three crates, AGPL-3.0-only, a client TUI,
+persistent profiles, and key generation and import. The public key alone is the
+protocol identity. A local profile is neither an account on the relay nor a
+profile event of some as-yet undefined kind.
 
-São propostas deste plano: modo somente leitura para chave pública isolada,
-cofre cifrado com senha local, Ratatui/Crossterm, rusqlite com SQLite embarcado,
-Axum/Tokio, cliente HTTP com Reqwest e editor externo para escrever artigos.
-Essas escolhas ficam sujeitas à revisão do usuário; nenhuma já foi implementada.
+The design uses read-only profiles for standalone public keys, an encrypted vault
+with a local password, Ratatui/Crossterm, rusqlite with bundled SQLite, Axum/Tokio,
+and Reqwest for HTTP. The TUI edits drafts in place using ratatui-textarea;
+an external editor remains optional for command-line use.
 
-A referência de protocolo é o repositório MIPs no commit
+The protocol reference is the MIPs repository at commit
 [c3d6018](https://github.com/mi66mc/mips/tree/c3d601848cd05c41b3726a9dc2631239656da8e7).
-A sugestão antiga de TypeScript na MIP-05 é não normativa; a decisão posterior
-do usuário é Rust. Os planos não alteram o protocolo para acomodar uma biblioteca.
+The earlier TypeScript suggestion in MIP-05 is non-normative; the user chose Rust
+later. The plans do not change the protocol to accommodate a library.
 
-## Abordagens consideradas
+## Approaches considered
 
-1. Cliente com perfis e chaves cifradas no SQLite: portátil, funciona offline e
-   não exige gerenciador de segredos do sistema. É a proposta adotada no plano.
-2. SQLite somente para dados públicos e chaves num chaveiro do sistema:
-   integração adicional por plataforma; pode ser um backend futuro.
-3. Assinador externo obrigatório: mantém o segredo fora do app, mas impediria
-   o fluxo local de criar/importar chave solicitado. Pode ser adicionado depois.
+1. Store client profiles and encrypted keys in SQLite. This is portable, works
+   offline, and does not require a system secret manager. This is the chosen approach.
+2. Use SQLite for public data only and put keys in a system keychain. This needs
+   extra per-platform integration and could be a future backend.
+3. Require an external signer. This keeps secrets out of the app but would prevent
+   the requested local key generation and import workflow. It could be added later.
 
-A biblioteca do protocolo fica sem HTTP, SQLite, TUI ou cofre.
-O relay não importa código do cliente. Comandos e TUI usam os mesmos serviços
-do cliente, dentro de murm-cli, sem duplicar regras nem criar outra crate.
+The protocol library does not depend on HTTP, SQLite, the TUI, or the vault.
+The relay does not import client code. The commands and TUI share services inside
+`murm-cli`, without duplicating rules or adding another crate.
 
-## Responsabilidades e interfaces entre os planos
+## Responsibilities and interfaces
 
-| Plano | Responsabilidade | Entrega aos demais |
+| Plan | Responsibility | Provides |
 | --- | --- | --- |
-| [01](plans/01-protocol.md) | Eventos, JSON/JCS, assinatura, tipos HTTP, filtros e revisões. | Tipos e validação determinística. |
-| [02](plans/02-relay.md) | SQLite do servidor, API, políticas, cursores e replicação. | Relay HTTP do perfil publications-test-v1. |
-| [03](plans/03-client.md) | SQLite local, perfis, cofre, rascunhos, rede e comandos. | ClientService utilizado também pela TUI. |
-| [04](plans/04-tui.md) | Navegação, formulários e tarefas de terminal. | Interface sobre ClientService, sem SQL ou criptografia nas telas. |
+| [01](plans/01-protocol.md) | Events, JSON/JCS, signatures, HTTP types, filters, and revisions. | Types and deterministic validation. |
+| [02](plans/02-relay.md) | Server-side SQLite, API, policies, cursors, and replication. | An HTTP relay for `publications-test-v1`. |
+| [03](plans/03-client.md) | Local SQLite, profiles, the vault, drafts, networking, and commands. | `ClientService`, also used by the TUI. |
+| [04](plans/04-tui.md) | Navigation, forms, and terminal tasks. | An interface over `ClientService`, with no SQL or cryptography in the views. |
 
-Tipos públicos da biblioteca: EventId, SignerKey, Event, UnsignedEvent,
-VerifiedEvent, ParseLimits, ProtocolError, PublicationKey, PublicationMeta,
-EventQuery, SyncRequest, QueryResponse, SyncResponse, RelayInfo, StoreReceipt,
-Problem e ProblemCode. VerifiedEvent tem construção controlada por verificação.
-Verificação criptográfica não significa validação do conteúdo editorial.
+The library exposes `EventId`, `SignerKey`, `Event`, `UnsignedEvent`,
+`VerifiedEvent`, `ParseLimits`, `ProtocolError`, `PublicationKey`,
+`PublicationMeta`, `EventQuery`, `SyncRequest`, `QueryResponse`,
+`SyncResponse`, `RelayInfo`, `StoreReceipt`, `Problem`, and `ProblemCode`.
+Construction of `VerifiedEvent` is controlled by verification. Cryptographic
+verification does not validate editorial content.
 
-Contratos principais:
-- parse_and_verify(bytes: &[u8], limits: ParseLimits) -> Result<VerifiedEvent, ProtocolError>.
-- sign_event(draft: &UnsignedEvent, seed: &[u8; 32]) -> Result<VerifiedEvent, ProtocolError>.
-- validate_publication(event: &VerifiedEvent) -> Result<PublicationMeta, ProtocolError>.
-- compare_revisions(a: &PublicationMeta, b: &PublicationMeta) -> Result<Ordering, ProtocolError>,
-  recusando comparar publicações distintas.
-- matches_filter(event: &VerifiedEvent, filter: &Filter) -> bool, após validação do pedido.
+Main contracts:
 
-Tipos concretos do cliente são definidos no plano 03. Telas não recebem seeds,
-senhas, master keys nem uma conexão SQLite.
+- `parse_and_verify(bytes: &[u8], limits: ParseLimits) -> Result<VerifiedEvent, ProtocolError>`.
+- `sign_event(draft: &UnsignedEvent, seed: &[u8; 32]) -> Result<VerifiedEvent, ProtocolError>`.
+- `validate_publication(event: &VerifiedEvent) -> Result<PublicationMeta, ProtocolError>`.
+- `compare_revisions(a: &PublicationMeta, b: &PublicationMeta) -> Result<Ordering, ProtocolError>`
+  rejects comparisons between different publications.
+- `matches_filter(event: &VerifiedEvent, filter: &Filter) -> bool` runs after request validation.
 
-## Perfis e chaves
+Plan 03 defines the client types. Views do not receive seeds, passwords, master
+keys, or a SQLite connection.
 
-Cada perfil local tem ID interno, nome de exibição, chave pública única, modo
-de uso, relays associados e preferências. A chave pública é a identidade real;
-o nome pode mudar sem mudar identidade. Assinatura e modo somente leitura
-são estados locais, nunca permissões impostas pelo relay.
+## Profiles and keys
 
-Fluxos:
-- Criar: gerar seed Ed25519 de 32 bytes com RNG do sistema e derivar a pública.
-- Importar privada: aceitar seed hexadecimal de exatamente 64 caracteres;
-  derivar a pública. Se o usuário informar também uma pública, exigir igualdade.
-- Importar pública: validar uma pública hexadecimal de 64 caracteres e criar
-  um perfil somente leitura, sem chave privada.
-- Reimportar a mesma pública: não duplicar identidade. Uma privada correspondente
-  pode promover o perfil existente a assinante, preservando relays e rascunhos.
-- Renomear, selecionar, bloquear, desbloquear e remover um perfil local.
-  Remoção local nunca publica retirada ou apaga conteúdo dos relays.
+Each local profile has an internal ID, a display name, a unique public key, a
+mode, associated relays, and preferences. The public key is the actual identity;
+the name can change without changing the identity. Signing and read-only mode
+are local states, not permissions enforced by the relay.
 
-Seeds expandidas de 64 bytes, formatos Nostr, frases de recuperação e hardware
-signers não são aceitos implicitamente. Dar erro de formato em vez de adivinhar.
+Workflows:
 
-## Cofre local proposto
+- Create: generate a 32-byte Ed25519 seed with the system RNG and derive the public key.
+- Import a private key: accept a seed of exactly 64 hex characters and derive
+  the public key. If the user supplies a public key too, require an exact match.
+- Import a public key: validate a 64-character hex public key and create a
+  read-only profile without a private key.
+- Reimport the same public key: do not duplicate the identity. A matching private
+  key can upgrade the existing profile to signing while preserving relays and drafts.
+- Rename, select, lock, unlock, or remove a local profile. Local removal never
+  publishes a withdrawal or deletes content from relays.
 
-Ao criar o primeiro perfil assinante, inicializar um cofre:
-- Master key aleatória de 32 bytes, cifrada por uma chave derivada da senha.
-- Argon2id v19: memória 65536 KiB, 3 iterações, paralelismo 1, saída 32 bytes,
-  salt aleatório de 16 bytes. Validar parâmetros antes de executar o KDF;
-  no leitor v1 aceitar somente esse conjunto, evitando custo arbitrário no arquivo.
-- XChaCha20-Poly1305, nonce aleatório novo de 24 bytes em cada cifragem.
-  Nunca reutilizar nonce com a mesma chave.
-- Master key envelopada autentica versão e parâmetros do cofre.
-  Seed cifrada autentica versão, ID do perfil e pública como dados associados.
-- Guardar somente ciphertext, salt, nonce e parâmetros em SQLite. Nem seeds
-  nem senha podem entrar em SQL, WAL, logs, erros, argumentos ou variáveis de ambiente.
-- Solicitar senha de no mínimo 12 caracteres Unicode na criação; não normalizar
-  a senha. Desbloqueio aceita a senha existente sem aplicar políticas novas.
-- Cofre permanece bloqueado no início. Bloquear limpa segredos em memória usando
-  tipos zeroizantes; isso não promete apagar swap, dumps ou cópias já existentes.
-- Trocar senha reencapsula a master key atomicamente. Senha errada ou corrupção
-  não sobrescreve o cofre. Não há recuperação por servidor.
-- Cofre tem operações explícitas de inicializar, desbloquear e trocar senha.
-  create_profile com privada exige um cofre já desbloqueado; não cria um
-  silenciosamente. A TUI/CLI conduz a inicialização antes do primeiro perfil.
-- Cada operação de cofre tem token e geração controlados pelo serviço.
-  lock/cancel invalidam a tentativa sob a mesma exclusão que instala a master key.
-  KDF roda fora dessa exclusão; antes de instalar o resultado é preciso conferir
-  geração/token novamente. Uma resposta tardia não desbloqueia o cofre.
-  Se a inicialização já fez commit antes do cancelamento, pode restar um cofre
-  vazio e bloqueado, nunca uma chave desbloqueada ou um arquivo sobrescrito.
-- Desbloqueio em memória não cifra rascunhos nem eventos públicos: o arquivo
-  SQLite inteiro não é um banco cifrado.
+Do not implicitly accept expanded 64-byte seeds, Nostr formats, recovery
+phrases, or hardware signers. Report a format error instead of guessing.
 
-Senha é proteção local do aplicativo, não login de protocolo.
-Perfis somente leitura podem existir sem inicializar/desbloquear o cofre.
-Backup automático e formato de exportação de segredos ficam fora desta etapa.
+## Local vault
 
-## Persistência e concorrência
+Initialize a vault before creating the first signing profile:
 
-Dois bancos independentes, nunca o mesmo arquivo:
-- Relay: eventos, admissão monotônica, preferências de revisão, filas de
-  propagação, memória de IDs, estado de sincronização e segredos dos cursores.
-- Cliente: perfis, cofre cifrado, relays, rascunhos, eventos verificados,
-  preferências, cursores e outbox por destino.
+- Generate a random 32-byte master key and encrypt it with a password-derived key.
+- Use Argon2id v19: 65536 KiB of memory, 3 iterations, parallelism 1, 32-byte output,
+  and a random 16-byte salt. Validate parameters before running the KDF. The v1
+  reader accepts only this parameter set, so the file cannot prescribe arbitrary costs.
+- Use XChaCha20-Poly1305 with a new random 24-byte nonce for each encryption.
+  Never reuse a nonce with the same key.
+- The wrapped master key authenticates the vault version and parameters.
+  The encrypted seed authenticates the version, profile ID, and public key as associated data.
+- Store only ciphertext, salt, nonce, and parameters in SQLite. Seeds and passwords
+  must not appear in SQL, WAL, logs, errors, arguments, or environment variables.
+- Require a password of at least 12 Unicode characters at creation. Do not normalize it.
+  Unlocking accepts the existing password without applying new policies.
+- The vault starts locked. Locking clears secrets from memory using zeroizing types.
+  This does not guarantee erasure of swap, dumps, or existing copies.
+- Changing the password rewraps the master key atomically. A wrong password or
+  corruption does not overwrite the vault. There is no server recovery.
+- Initialization, unlocking, and password changes are explicit vault operations.
+  `create_profile` with a private key requires an already unlocked vault;
+  it does not silently create one. The TUI and CLI guide first-time initialization.
+- Each vault operation has a service-controlled token and generation. Locking
+  or canceling invalidates the attempt under the same lock that installs the
+  master key. The KDF runs outside that lock. Check the generation and token
+  again before installing the result; a late response cannot unlock the vault.
+  If initialization committed before cancellation, an empty locked vault may
+  remain, but never an unlocked key or an overwritten file.
+- Unlocking in memory does not encrypt drafts or public events. The SQLite file
+  as a whole is not encrypted.
 
-Usar diretório de dados da plataforma; aceitar --data-dir e --db para testes.
-Migrações versionadas, foreign_keys=ON, WAL e busy_timeout de 5 segundos.
-Cada processo possui uma conexão gerenciada por worker dedicado. Chamadas
-assíncronas enviam trabalho ao worker; não executar SQL/KDF pesado no loop da TUI.
-Um app não abre o banco do outro. Erro de migração não apaga o banco.
+The password protects the local application; it is not a protocol login.
+Read-only profiles do not need the vault to be initialized or unlocked.
+Automatic backup and a secret export format are outside this stage.
 
-Adicionar trava exclusiva de instância do cliente para impedir duas TUIs
-desbloqueando/editando o mesmo cofre simultaneamente. Instâncias independentes
-usam diretórios separados. Conexões curtas de inspeção read-only são opcionais.
+## Persistence and concurrency
 
-## Cliente e TUI
+Use two independent databases, never the same file:
 
-Executar murm-cli sem subcomando abre a TUI se houver terminal interativo;
-em entrada não interativa imprime ajuda e não espera uma senha indefinidamente.
-Subcomandos permitem os mesmos fluxos para scripts e testes.
+- Relay: events, monotonic admission sequence, preferred revisions, propagation
+  queues, remembered IDs, sync state, and cursor secrets.
+- Client: profiles, encrypted vault data, relays, drafts, verified events,
+  preferences, cursors, and per-destination outbox state.
 
-Telas: perfis, criar/importar perfil, desbloquear cofre, relays, artigos,
-leitura de edição/histórico, rascunhos e fila de publicação. Exibir perfil ativo,
-estado do cofre, tarefas em andamento e erros sem interromper o desenho da tela.
+Use the platform data directory and accept `--data-dir` and `--db` for tests.
+Use versioned migrations, `foreign_keys=ON`, WAL, and a five-second `busy_timeout`.
+Each process has a connection managed by a dedicated worker. Async calls send work
+to the worker; keep SQL and heavy KDF work out of the TUI loop. Neither program
+opens the other's database. A migration error does not erase the database.
 
-Publicação exige perfil assinante desbloqueado. Somente leitura pode consultar,
-sincronizar e ler cache offline. Alterar perfil não muda a identidade de tarefas
-já criadas: cada tarefa/outbox carrega seu ProfileId e um identificador de geração.
-Resultados antigos não podem substituir o estado da tela do novo perfil.
+Use an exclusive client instance lock so two TUIs cannot unlock or edit the same
+vault at once. Independent instances use separate directories. Short read-only
+inspection connections are optional.
 
-Artigos são fonte Markdown do Pandoc. Primeira versão lê como texto com rolagem;
-não promete renderização completa de citações. Proposta: escrever em editor
-externo configurado como executável + lista de argumentos, sem shell. Restaurar
-o terminal antes de abrir e retomá-lo mesmo em erro; preservar o rascunho no banco.
+## Client and TUI
 
-## Fluxo do relay e do cliente
+Running `murm-cli` without a subcommand opens the TUI in an interactive terminal.
+With noninteractive input, it prints help without waiting indefinitely for a password.
+Subcommands support the same workflows for scripts and tests.
 
-Validar limites antes de processar dados não confiáveis. Relay e cliente
-recalculam IDs e verificam assinaturas; valores desconhecidos não são descartados.
-Receiver aceita metadados públicos de publicações, não certifica fontes do artigo.
+The TUI includes profiles, profile creation and import, vault unlocking, relays,
+articles, revision reading and history, drafts, and the outbox. Ratatui and asynchronous
+Crossterm input provide an adaptive navigation sidebar, content area, and footer.
+The UI shows the active profile, vault state, ongoing tasks, and errors without
+interrupting rendering.
 
-O relay confirma somente depois do commit de evento, admissão e estado de revisão.
-Replicação é best effort e persistente. O cliente reutiliza o mesmo evento assinado
-ao repetir um envio; sucesso significa armazenamento no destino informado.
+Publishing requires an unlocked signing profile. Read-only profiles can query,
+sync, and read cached content offline. Switching profiles does not change the
+identity associated with an existing task or outbox item: each carries its own
+`ProfileId` and generation identifier. Stale results cannot replace the new
+profile's view state.
 
-Sincronização persiste eventos, preferência e cursor numa transação. Batch
-inválido não avança marcador conforme MIP-03. Expiração de conteúdo não remove
-a memória de uma retirada nem a preferência já verificada.
+Articles are Pandoc Markdown source. The reader shows scrollable text; it does
+not promise full citation rendering. Press `e` to edit in the TUI's plain
+source editor, powered by ratatui-textarea. The editor opens on Body; `Tab`
+switches between Title and Body. `Ctrl+S` saves locally, `Ctrl+Z` undoes,
+`Ctrl+Y` redoes, `Shift` plus arrows selects text, and `Ctrl+A` selects all
+in the focused field. `Esc` goes back and `Ctrl+C` quits;
+both require confirmation if there are unsaved changes. `p` confirms publishing
+a saved draft. The optional command-line editor takes an executable and argument
+list without using a shell, and preserves the saved draft on failure.
 
-O relay tem import_sync_batch separado de admit: valida primeiro o lote completo
-e depois admite seus eventos, heads, trabalhos de propagação e marcador do peer
-na mesma transação. A operação interna de admissão não faz commits próprios.
-Um evento inválido no fim do lote ou erro no commit não deixa o marcador avançado
-nem entradas parciais daquele lote. O cliente segue a mesma regra para cache/heads/cursor.
+## Relay and client data flow
 
-## Limites da primeira entrega
+Enforce limits before processing untrusted data. The relay and client recalculate
+IDs and verify signatures; unknown values are preserved. Receiving public
+publication metadata does not certify the article's sources.
 
-Publicações kind 1, consulta, sync, perfil atual e propagação manualmente configurada.
-Sem DMs ou Double Ratchet implementado, descoberta assinada automática, lookup
-entre relays, backup padronizado, delegação de dispositivos ou promessa de
-resistência forte a bloqueios. Os perfis locais não criam outro tipo de evento.
+The relay acknowledges only after committing the event, admission, and revision
+state. Replication is persistent and best-effort. The client reuses the signed
+event on retry. Success means storage at the named destination. Outbox retries are
+user-triggered and subject to backoff.
 
-Os testes de aceitação usam dois relays e dois diretórios de cliente, incluindo
-crash/restart, duplicatas, edições concorrentes, retirada e expiração.
-Compartilhar a crate não demonstra interoperabilidade independente; conferir
-também o exemplo criptográfico conhecido das MIPs.
+Sync commits events, preferred revisions, and the cursor in one transaction.
+An invalid batch does not advance the cursor under MIP-03. Content expiry does
+not erase remembered withdrawals or the verified preferred revision.
 
-## Ordem e critérios de revisão
+The relay's `import_sync_batch` is distinct from `admit`: it validates the
+entire batch first, then admits events, revision heads, propagation jobs, and the
+peer cursor in one transaction. Internal admission does not commit on its own.
+An invalid last event or a commit failure cannot leave an advanced cursor or
+partial batch entries. The client applies the same rule to its cache, heads, and cursor.
 
-1. Protocolo compartilhado.
-2. Relay e persistência/perfis do cliente podem avançar depois das interfaces do 01.
-3. Rede e comandos do cliente, depois da API do relay.
-4. TUI sobre serviços testados.
-5. Fluxo completo com falhas e medição de gargalos.
+## First release limits
 
-Antes de implementar, revisar especialmente as propostas de cofre, perfis somente
-leitura e editor externo. Estes documentos são o resultado da solicitação de
-planejamento; não autorizam iniciar as etapas nem instalar dependências.
+The release covers kind 1 publications, queries, sync, the current view, and
+propagation among manually configured peers. It does not implement DMs or Double
+Ratchet, automatic signed discovery, relay lookup, standardized backup, or device
+delegation, nor does it promise strong blocking resistance. Local profiles do not
+introduce a new event kind.
 
-## Referências técnicas consultadas
+Acceptance tests use two relays and two client directories, covering crash and
+restart, duplicates, concurrent edits, withdrawal, and expiry. Sharing a crate
+does not show independent interoperability; also check the known MIPs
+cryptographic example.
 
-- [Ratatui](https://ratatui.rs/): widgets e terminal.
-- [rusqlite](https://docs.rs/rusqlite/latest/rusqlite/): SQLite no processo.
-- [Axum](https://docs.rs/axum/latest/axum/): camada HTTP.
-- [serde_jcs](https://docs.rs/serde_jcs/latest/serde_jcs/): canonicalização.
-- [Ed25519 dalek](https://docs.rs/ed25519-dalek/latest/ed25519_dalek/struct.VerifyingKey.html): diferenças entre verificadores.
-- [Argon2](https://docs.rs/argon2/latest/argon2/): derivação de chave.
-- [ChaCha20Poly1305](https://docs.rs/chacha20poly1305/latest/chacha20poly1305/): AEAD e nonce estendido.
+## Implementation order and review criteria
+
+1. Shared protocol library.
+2. Relay and client persistence and profiles after the interfaces in Plan 01.
+3. Client networking and commands after the relay API.
+4. TUI on top of tested services.
+5. End-to-end failure scenarios and bottleneck measurements.
+
+The component plans record the approved implementation sequence. Prototype
+measurements and the final review are still pending.
+
+## Technical references
+
+- [Ratatui](https://ratatui.rs/): widgets and terminal rendering.
+- [rusqlite](https://docs.rs/rusqlite/latest/rusqlite/): in-process SQLite.
+- [Axum](https://docs.rs/axum/latest/axum/): HTTP layer.
+- [serde_jcs](https://docs.rs/serde_jcs/latest/serde_jcs/): canonicalization.
+- [Ed25519 dalek](https://docs.rs/ed25519-dalek/latest/ed25519_dalek/struct.VerifyingKey.html): verification behavior.
+- [Argon2](https://docs.rs/argon2/latest/argon2/): key derivation.
+- [ChaCha20Poly1305](https://docs.rs/chacha20poly1305/latest/chacha20poly1305/): AEAD and extended nonces.

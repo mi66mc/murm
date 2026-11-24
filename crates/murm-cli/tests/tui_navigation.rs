@@ -16,21 +16,68 @@ fn navigation_bursts_work_while_background_task_is_busy() {
     let mut state = AppState::default();
     let context = state.begin_task();
     for _ in 0..50 {
-        for c in ['2','3','4','5','1'] {
-            murm_cli::tui::handle_key(&mut state, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        for c in ['2', '3', '4', '5', '1'] {
+            murm_cli::tui::handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
         }
     }
-    murm_cli::tui::handle_key(&mut state, KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
+    murm_cli::tui::handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE),
+    );
     assert_eq!(state.screen, Screen::Relays);
-    assert!(state.apply_result(context, murm_cli::tui::UiMessage::Detail {title:"Late response".into(), text:"data".into()}));
+    assert!(state.apply_result(
+        context,
+        murm_cli::tui::UiMessage::Detail {
+            title: "Late response".into(),
+            text: "data".into()
+        }
+    ));
     assert_eq!(state.screen, Screen::Relays);
     assert!(!state.busy);
 }
 #[test]
 fn key_release_does_not_navigate() {
     let mut state = AppState::default();
-    let key = KeyEvent::new_with_kind(KeyCode::Char('3'), KeyModifiers::NONE, crossterm::event::KeyEventKind::Release);
+    let key = KeyEvent::new_with_kind(
+        KeyCode::Char('3'),
+        KeyModifiers::NONE,
+        crossterm::event::KeyEventKind::Release,
+    );
     murm_cli::tui::handle_key(&mut state, key);
+    assert_eq!(state.screen, Screen::Profiles);
+}
+#[test]
+fn help_blocks_hidden_profile_removal_and_escape_only_dismisses_help() {
+    let mut state = AppState::default();
+    state.profiles = vec![murm_cli::ProfileSummary {
+        id: uuid::Uuid::new_v4(),
+        name: "Test".into(),
+        public_key: murm_protocol::derive_public_key(&[1; 32]),
+        mode: murm_cli::ProfileMode::Signing,
+        locked: true,
+        relays: vec![],
+    }];
+    state.help = true;
+    assert!(
+        murm_cli::tui::handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)
+        )
+        .is_none()
+    );
+    assert!(state.confirm.is_none());
+    assert!(
+        murm_cli::tui::handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        )
+        .is_none()
+    );
+    murm_cli::tui::handle_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!state.help);
     assert_eq!(state.screen, Screen::Profiles);
 }
 #[test]

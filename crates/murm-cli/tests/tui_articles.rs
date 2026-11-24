@@ -165,8 +165,8 @@ fn status_shows_local_storage_not_delivery() {
         last_error: None,
     };
     let text = destination_label(&status);
-    assert!(text.contains("armazenado"));
-    assert!(!text.contains("entregue"));
+    assert!(text.contains("stored"));
+    assert!(!text.contains("delivered"));
     assert!(text.contains("100"));
 }
 #[test]
@@ -205,4 +205,30 @@ fn failed_refresh_does_not_schedule_another_refresh() {
     assert!(!state.finish_task(context, Err(ClientError::Network)));
     assert!(!state.busy);
     assert!(state.status.contains("network"));
+}
+#[test]
+fn outbox_enter_opens_relay_errors_and_retry_times_at_any_width() {
+    let mut state = AppState::default();
+    state.screen = Screen::Outbox;
+    state.outbox = vec![OutboxEntry {
+        event_id: event("queued", 100).event().id,
+        profile_id: ProfileId::new_v4(),
+        created_at: 100,
+        destinations: vec![DestinationStatus {
+            relay: "https://relay.example".into(),
+            state: DestinationState::Refused,
+            retain_until: None,
+            retry_at: Some(500),
+            attempts: 1,
+            last_error: Some("policy rejected this event".into()),
+        }],
+    }];
+    handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert_eq!(state.screen, Screen::Article);
+    assert!(state.detail.contains("https://relay.example"));
+    assert!(state.detail.contains("policy rejected this event"));
+    assert!(state.detail.contains("500"));
 }

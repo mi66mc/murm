@@ -15,6 +15,8 @@ use zeroize::Zeroizing;
 )]
 pub struct Cli {
     #[arg(long, global = true)]
+    pub max_db_bytes: Option<u64>,
+    #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
     #[arg(long, global = true, conflicts_with = "data_dir")]
     pub db: Option<PathBuf>,
@@ -204,9 +206,9 @@ fn password(path: Option<&Path>, confirm: bool) -> Result<SecretString, ClientEr
     if !secret_prompt_allowed() {
         return Err(ClientError::InvalidInput);
     }
-    let s = SecretString::new(rpassword::prompt_password("Senha local do cofre: ")?);
+    let s = SecretString::new(rpassword::prompt_password("Local vault password: ")?);
     if confirm {
-        let second = SecretString::new(rpassword::prompt_password("Confirme a senha: ")?);
+        let second = SecretString::new(rpassword::prompt_password("Confirm password: ")?);
         if s.0.as_str() != second.0.as_str() {
             return Err(ClientError::InvalidInput);
         }

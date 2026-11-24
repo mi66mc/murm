@@ -1,17 +1,19 @@
-# Planos de implementação do Murm
+# Murm Implementation Plans
 
-Estado: propostas para revisão; nenhuma tarefa foi executada.
-Comece pelo [desenho comum](../design.md), que separa decisões do usuário
-das propostas de implementação.
+The prototype is implemented and in final validation. These plans preserve the
+approved roadmap. Measurements and final review remain pending. Start with the
+[shared design](../design.md) for the project decisions and implementation choices.
 
-1. [Protocolo compartilhado](01-protocol.md): eventos, assinaturas, tipos e regras.
-2. [Relay](02-relay.md): SQLite, HTTP, políticas, cursores e replicação.
-3. [Cliente e perfis](03-client.md): SQLite local, geração/importação, cofre,
-   rascunhos, transporte e comandos.
-4. [TUI e integração](04-tui.md): telas, tarefas assíncronas e testes completos.
+1. [Shared protocol](01-protocol.md): events, signatures, types, and rules.
+2. [Relay](02-relay.md): SQLite, HTTP, policies, cursors, and replication.
+3. [Client and profiles](03-client.md): local SQLite, key generation and import,
+   the vault, drafts, transport, and commands.
+4. [TUI and integration](04-tui.md): screens, asynchronous tasks, and end-to-end tests.
+5. [Responsive TUI and editor](05-tui-refresh.md): immediate input, a readable layout, and integrated Markdown editing.
 
-A ordem é 01, depois 02/03 conforme suas interfaces, e por último 04.
-Os testes de carga vêm depois de validar comportamento e falhas.
+The implementation order was 01, then 02 and 03 as their interfaces became
+available, and finally 04. Load testing follows behavior and failure validation.
 
-Não iniciar implementação até o usuário revisar o desenho e estes planos.
-As dependências listadas são propostas; nenhuma foi instalada nesta etapa.
+The user approved implementation. Dependency versions are locked in
+`Cargo.lock`. The [README](../../README.md) documents current commands,
+limits, and features.

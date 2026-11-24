@@ -1,25 +1,15 @@
-use crate::Draft;
-use crate::tui::sanitize;
-pub fn label(draft: &Draft) -> String {
+use crate::DraftSummary;
+pub fn label(draft: &DraftSummary) -> String {
     format!(
-        "{} · rev {} · {}\n{}",
-        sanitize(
-            draft
-                .header
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Sem título")
-        ),
+        "rev {} · {}",
         draft
-            .header
-            .get("revision")
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+            .revision
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "invalid".into()),
         if draft.queued_event_id.is_some() {
-            "já enfileirado"
+            "already queued"
         } else {
-            "rascunho local"
-        },
-        draft.id
+            "local draft"
+        }
     )
 }
